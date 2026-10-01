@@ -28,6 +28,7 @@ class PolicyRagSearchResult(BaseModel):
     policy_name: str | None = None
     section: str | None = None
     semantic_section: str | None = None
+    section_subtype: str | None = None
     source_type: str | None = None
     source_title: str | None = None
     source_url: str | None = None

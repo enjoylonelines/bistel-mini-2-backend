@@ -1,0 +1,29 @@
+[
+  {"id":"M01","query":"이 지원은 어디에서 신청하면 되나요?","expected_subtype":"APPLICATION_METHOD","target_section":"신청 방법"},
+  {"id":"M02","query":"온라인으로도 접수할 수 있나요, 아니면 주민센터에 가야 하나요?","expected_subtype":"APPLICATION_METHOD","target_section":"신청 방법"},
+  {"id":"M03","query":"어떤 기관에 문의해서 신청해야 하나요?","expected_subtype":"APPLICATION_METHOD","target_section":"신청 방법"},
+  {"id":"M04","query":"복지로에서 신청 가능한가요?","expected_subtype":"APPLICATION_METHOD","target_section":"신청 방법"},
+  {"id":"M05","query":"휴가 기간의 급여는 어디에 신청하나요?","expected_subtype":"APPLICATION_METHOD","target_section":"신청 방법"},
+  {"id":"M06","query":"공단에 직접 신청하는 건가요?","expected_subtype":"APPLICATION_METHOD","target_section":"신청 방법"},
+  {"id":"M07","query":"신청 절차를 어떻게 진행하나요?","expected_subtype":"APPLICATION_METHOD","target_section":"신청 방법"},
+  {"id":"M08","query":"주민센터 말고 다른 신청 기관도 있나요?","expected_subtype":"APPLICATION_METHOD","target_section":"신청 방법"},
+
+  {"id":"P01","query":"신청 기간은 언제인가요?","expected_subtype":"APPLICATION_PERIOD","target_section":"신청 기간"},
+  {"id":"P02","query":"접수 기간이 정해져 있나요?","expected_subtype":"APPLICATION_PERIOD","target_section":"신청 기간"},
+  {"id":"P03","query":"언제 신청할 수 있나요?","expected_subtype":"APPLICATION_PERIOD","target_section":"신청 기간"},
+  {"id":"P04","query":"모집 기간 없이 상시 신청 가능한가요?","expected_subtype":"APPLICATION_PERIOD","target_section":"신청 기간"},
+  {"id":"P05","query":"신청 마감이 따로 있나요?","expected_subtype":"APPLICATION_PERIOD","target_section":"신청 기간"},
+  {"id":"P06","query":"접수 기한이 언제까지예요?","expected_subtype":"APPLICATION_PERIOD","target_section":"신청 기간"},
+  {"id":"P07","query":"상시 모집인지 기간이 있는지 알고 싶어요.","expected_subtype":"APPLICATION_PERIOD","target_section":"신청 기간"},
+  {"id":"P08","query":"신청 가능한 시기가 따로 정해져 있나요?","expected_subtype":"APPLICATION_PERIOD","target_section":"신청 기간"},
+  {"id":"P09","query":"무료법률상담은 언제 신청할 수 있나요?","expected_subtype":"APPLICATION_PERIOD","target_section":"신청 기간"},
+
+  {"id":"N01","query":"지원 내용이 무엇인가요?","expected_subtype":null,"target_section":null},
+  {"id":"N02","query":"얼마나 지원받을 수 있나요?","expected_subtype":null,"target_section":null},
+  {"id":"N03","query":"누가 지원 대상인가요?","expected_subtype":null,"target_section":null},
+  {"id":"N04","query":"자격 조건을 알려주세요.","expected_subtype":null,"target_section":null},
+  {"id":"N05","query":"신청할 때 어떤 서류가 필요한가요?","expected_subtype":null,"target_section":null},
+  {"id":"N06","query":"제출해야 하는 증빙자료가 있나요?","expected_subtype":null,"target_section":null},
+  {"id":"N07","query":"주의해야 할 조건이나 제외 대상이 있나요?","expected_subtype":null,"target_section":null},
+  {"id":"N08","query":"이 정책이 어떤 도움을 주는지 요약해 주세요.","expected_subtype":null,"target_section":null}
+]

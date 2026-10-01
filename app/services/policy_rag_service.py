@@ -48,6 +48,11 @@ EVIDENCE_ROLE_BY_SEMANTIC_SECTION = {
     "LEGAL_BASIS": "reference",
 }
 
+SECTION_SUBTYPE_BY_DETAIL_SECTION = {
+    "신청 방법": "APPLICATION_METHOD",
+    "신청 기간": "APPLICATION_PERIOD",
+}
+
 
 class PolicyRagService:
     def __init__(self) -> None:
@@ -204,6 +209,12 @@ class PolicyRagService:
             metadata.get("evidence_role")
             or EVIDENCE_ROLE_BY_SEMANTIC_SECTION.get(semantic_section)
         )
+        section_subtype = (
+            metadata.get("section_subtype")
+            or SECTION_SUBTYPE_BY_DETAIL_SECTION.get(
+                str(metadata.get("section") or "")
+            )
+        )
         metadata.update(
             {
                 "metadata_version": POLICY_RAG_METADATA_VERSION,
@@ -232,6 +243,7 @@ class PolicyRagService:
                 "source_type": source_type,
                 "semantic_section": semantic_section,
                 "evidence_role": evidence_role,
+                "section_subtype": section_subtype,
                 "reference_document_type": self._reference_document_type(
                     source_type=source_type,
                     source_title=source_title,
@@ -253,6 +265,12 @@ class PolicyRagService:
             policy_name=self._to_str(metadata.get("policy_name")),
             section=self._to_str(metadata.get("section")),
             semantic_section=self._to_str(metadata.get("semantic_section")),
+            section_subtype=self._to_str(
+                metadata.get("section_subtype")
+                or SECTION_SUBTYPE_BY_DETAIL_SECTION.get(
+                    str(metadata.get("section") or "")
+                )
+            ),
             source_type=self._to_str(metadata.get("source_type")),
             source_title=self._to_str(metadata.get("source_title")),
             source_url=self._to_str(metadata.get("source_url")),

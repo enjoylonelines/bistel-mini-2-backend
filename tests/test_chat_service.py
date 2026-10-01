@@ -819,6 +819,62 @@ def test_send_message_stream_emits_tokens_then_done(monkeypatch) -> None:
     mocks["request_mark_completed"].assert_awaited_once()
 
 
+def test_send_message_stream_disconnect_after_accept_persists_same_run(monkeypatch) -> None:
+    """Transport cancellation must not turn an accepted durable request into a failed run."""
+
+    async def scenario() -> None:
+        session = _session()
+        db = AsyncMock()
+        mocks = _patch_repo_for_send(monkeypatch, session=session)
+        graph_started = asyncio.Event()
+        allow_graph_finish = asyncio.Event()
+
+        monkeypatch.setattr(
+            PolicyRepository,
+            "find_ids_by_codes",
+            AsyncMock(return_value={"WLF1": 42}),
+        )
+
+        async def delayed_run_chat(**kwargs: Any) -> dict:
+            graph_started.set()
+            await allow_graph_finish.wait()
+            return _graph_result()
+
+        monkeypatch.setattr(chat_service_module, "_run_chat", delayed_run_chat)
+
+        stream = ChatService.send_message_stream(
+            db=db,
+            session=session,
+            content="추천해줘",
+            idempotency_key="disconnect-case",
+        )
+
+        accepted = json.loads((await stream.__anext__())[len("data: ") : -2])
+        assert accepted["type"] == "accepted"
+        assert accepted["request_id"] == "200"
+
+        pending_event = asyncio.create_task(stream.__anext__())
+        await graph_started.wait()
+
+        # Simulate the request task being cancelled because the SSE transport
+        # disappeared. The durable run must keep using the already accepted
+        # request rather than treating the disconnect as a user cancellation.
+        pending_event.cancel()
+        allow_graph_finish.set()
+
+        with pytest.raises(StopAsyncIteration):
+            await pending_event
+
+        assert len(mocks["_saved_requests"]) == 1
+        assert len(mocks["_saved_messages"]) == 2
+        assert [message.role for message in mocks["_saved_messages"]] == ["user", "assistant"]
+        mocks["request_mark_completed"].assert_awaited_once()
+        mocks["request_mark_cancelled"].assert_not_awaited()
+        mocks["request_mark_failed"].assert_not_awaited()
+
+    asyncio.run(scenario())
+
+
 def test_send_message_stream_error_event_when_graph_raises(monkeypatch) -> None:
     session = _session()
     db = AsyncMock()
@@ -850,6 +906,51 @@ def test_send_message_stream_error_event_when_graph_raises(monkeypatch) -> None:
     mocks["update_last_message_at"].assert_not_awaited()
     mocks["request_mark_failed"].assert_awaited_once()
     assert db.commit.await_count >= 2
+
+
+def test_send_message_stream_deleted_session_blocks_late_persist_without_local_cancel(monkeypatch) -> None:
+    """DB session deletion must suppress late writes even without process-local cancel."""
+
+    session = _session()
+    db = AsyncMock()
+    mocks = _patch_repo_for_send(monkeypatch, session=session)
+    mocks["session_exists"].return_value = False
+
+    # Simulate deletion/cancellation being observed only through durable DB state,
+    # as can happen when a different worker/process handles the delete request.
+    cancel_event = asyncio.Event()
+    monkeypatch.setattr(
+        chat_service_module.chat_cancel_registry,
+        "register",
+        MagicMock(return_value=cancel_event),
+    )
+    unregister_mock = MagicMock()
+    monkeypatch.setattr(
+        chat_service_module.chat_cancel_registry,
+        "unregister",
+        unregister_mock,
+    )
+
+    _patch_run_chat_for_stream(
+        monkeypatch,
+        _graph_result(),
+        tokens=["생성됐지만 저장되면 안 됨"],
+    )
+
+    chunks = asyncio.run(_collect(
+        ChatService.send_message_stream(db=db, session=session, content="x")
+    ))
+    events = _parse_sse_chunks(chunks)
+
+    assert [e["type"] for e in events] == ["accepted", "intent", "token", "cancelled"]
+    assert events[-1]["request_id"] == "200"
+    assert len(mocks["_saved_messages"]) == 1
+    assert mocks["_saved_messages"][0].role == "user"
+    mocks["bulk_save_message_policies"].assert_not_awaited()
+    mocks["bulk_save_message_evidences"].assert_not_awaited()
+    mocks["request_mark_completed"].assert_not_awaited()
+    mocks["request_mark_cancelled"].assert_awaited_once()
+    unregister_mock.assert_called_once_with(10, cancel_event)
 
 
 def test_send_message_stream_cancelled_before_persist_saves_nothing(monkeypatch) -> None:

@@ -1,0 +1,10 @@
+{"case_id":"R004","query":"회사 다니는 발달장애인이 교육을 받으려면 어디에 문의해야 하나요?","expected_policy_ids":[237],"expected_sections":["신청 방법"],"category":"application"}
+{"case_id":"R009","query":"취약계층 대상 체험식 법 수업은 어느 기관에 신청하나요?","expected_policy_ids":[238],"expected_sections":["신청 방법"],"category":"application"}
+{"case_id":"R010","query":"이주 배경 가족이 정해진 모집 기간 없이 법을 배울 수 있는 곳이 있을까요?","expected_policy_ids":[238],"expected_sections":["신청 기간","공식 지원대상 원문"],"category":"application"}
+{"case_id":"R014","query":"임산부 병원비 카드 포인트는 공단이나 카드사 중 어디에서 신청하나요?","expected_policy_ids":[240],"expected_sections":["신청 방법"],"category":"application"}
+{"case_id":"R019","query":"법률 문제를 무료로 물어보려면 어떤 기관을 찾아가야 하나요?","expected_policy_ids":[242],"expected_sections":["신청 방법"],"category":"application"}
+{"case_id":"R025","query":"임신 준비 시술로 쉰 기간의 임금 보전은 어디에 신청하나요?","expected_policy_ids":[246],"expected_sections":["신청 방법"],"category":"application"}
+{"case_id":"R035","query":"어르신과 아이 독감 주사는 보건소 말고 동네 병원에서도 지원되나요?","expected_policy_ids":[251],"expected_sections":["신청 방법"],"category":"application"}
+{"case_id":"R039","query":"모든 신생아에게 한 번 나오는 목돈은 온라인이나 동네 행정기관에서 어떻게 신청하나요?","expected_policy_ids":[255],"expected_sections":["신청 방법"],"category":"application"}
+{"case_id":"R045","query":"저소득 가정의 냉난방비 도움은 온라인과 주민센터 중 어디서 신청하나요?","expected_policy_ids":[289],"expected_sections":["신청 방법"],"category":"application"}
+{"case_id":"R049","query":"저소득 청소년 운동비는 시청 방문 말고 인터넷으로도 신청할 수 있나요?","expected_policy_ids":[292],"expected_sections":["신청 방법"],"category":"application"}
