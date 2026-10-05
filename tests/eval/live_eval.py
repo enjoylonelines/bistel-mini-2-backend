@@ -17,7 +17,10 @@
 
 주의:
   - 실제 LLM을 호출한다. 기본 45회 호출 (15 시나리오 × 3회).
-  - DB를 변경하지 않는다. 핸들러 lifecycle runner는 stub으로 교체한다.
+  - DB/RAG를 호출하거나 변경하지 않는다. lifecycle runner와 RAG 조회는
+    결정론적 fixture로 교체한다.
+  - 이 평가는 LLM 라우팅·응답 구조만 측정한다. 정책 검색 품질이나 실제
+    RAG grounding(근거성) 지표로 사용하면 안 된다.
   - 측정되지 않은 결과를 임의로 작성하지 않는다.
 """
 from __future__ import annotations
@@ -59,6 +62,24 @@ class _FakeDb:
 
     async def rollback(self) -> None:
         pass
+
+
+_LIVE_EVAL_POLICY = {
+    "policy_id": "live-eval-policy-001",
+    "slug": "live-eval-policy-001",
+    "policy_name": "[live-eval fixture] 정책",
+    "summary": None,
+    "tag": None,
+    "tagTone": None,
+}
+
+_LIVE_EVAL_EVIDENCE = {
+    "chunk_id": 990001,
+    "snippet": "[live-eval fixture] 외부 정책 데이터에 의존하지 않는 평가용 근거입니다.",
+    "source_title": "[live-eval fixture] 정책",
+    "source_url": "fixture://live-eval/policy-001",
+    "evidence_role": "fixture",
+}
 
 
 def _make_stub_recommend_result() -> tuple[Any, None]:
@@ -176,6 +197,39 @@ def _restore_lifecycle_runners(monkeypatch_dict: dict[str, Any]) -> None:
     _ch._run_eligibility_lifecycle = monkeypatch_dict["_ch._run_eligibility_lifecycle"]
     _ch._run_comparison_branch = monkeypatch_dict["_ch._run_comparison_branch"]
     _ha._run_apply_preparation = monkeypatch_dict["_ha._run_apply_preparation"]
+
+
+def _patch_data_dependencies(monkeypatch_dict: dict[str, Any]) -> None:
+    """라이브 평가가 실제 정책 DB/RAG로 새지 않도록 고정 fixture를 주입한다."""
+    import app.services.chat.ai._policy_resolver as _resolver
+
+    monkeypatch_dict["_resolver.rag_lookup"] = _resolver.rag_lookup
+    monkeypatch_dict["_resolver._find_compare_targets_by_policy_names"] = (
+        _resolver._find_compare_targets_by_policy_names
+    )
+
+    async def _stub_rag_lookup(_: str) -> tuple[list[dict], list[dict]]:
+        return [dict(_LIVE_EVAL_POLICY)], [dict(_LIVE_EVAL_EVIDENCE)]
+
+    async def _stub_find_compare_targets_by_policy_names(
+        _: str,
+    ) -> tuple[None, None]:
+        # 이름 기반 SQL 조회를 건너뛰고, 아래 RAG fixture 경로로 통일한다.
+        return None, None
+
+    _resolver.rag_lookup = _stub_rag_lookup  # type: ignore[assignment]
+    _resolver._find_compare_targets_by_policy_names = (  # type: ignore[assignment]
+        _stub_find_compare_targets_by_policy_names
+    )
+
+
+def _restore_data_dependencies(monkeypatch_dict: dict[str, Any]) -> None:
+    import app.services.chat.ai._policy_resolver as _resolver
+
+    _resolver.rag_lookup = monkeypatch_dict["_resolver.rag_lookup"]
+    _resolver._find_compare_targets_by_policy_names = monkeypatch_dict[
+        "_resolver._find_compare_targets_by_policy_names"
+    ]
 
 
 # ─── 단일 시나리오 실행 ──────────────────────────────────────────────────────
@@ -482,11 +536,13 @@ async def _main(scenario_ids: list[str] | None, runs: int) -> None:
 
     total_calls = len(scenarios) * runs
     print(f"[live_eval] 시나리오 {len(scenarios)}개 × {runs}회 = {total_calls}회 LLM 호출")
-    print("[live_eval] lifecycle runner는 stub으로 교체되어 DB를 변경하지 않습니다.")
+    print("[live_eval] lifecycle runner와 RAG 조회는 fixture로 교체됩니다.")
+    print("[live_eval] 이 결과는 라우팅·응답 구조 평가이며, 검색 품질 평가는 아닙니다.")
     print()
 
     stubs: dict[str, Any] = {}
     _patch_lifecycle_runners(stubs)
+    _patch_data_dependencies(stubs)
 
     all_results: dict[str, list[dict[str, Any]]] = {}
     try:
@@ -498,6 +554,7 @@ async def _main(scenario_ids: list[str] | None, runs: int) -> None:
                 all_results[sid].append(r)
             _print_individual_results(sc, all_results[sid])
     finally:
+        _restore_data_dependencies(stubs)
         _restore_lifecycle_runners(stubs)
 
     # ── 지표 계산 ──
@@ -523,6 +580,13 @@ async def _main(scenario_ids: list[str] | None, runs: int) -> None:
 
     # JSON 결과 저장
     output = {
+        "evaluation_scope": "isolated_live_llm_routing_and_response_structure",
+        "data_dependency": "deterministic_fixture",
+        "not_measured": [
+            "production_policy_retrieval_quality",
+            "grounded_answer_correctness",
+            "real_corpus_latency",
+        ],
         "metrics": metrics,
         "results": all_results,
     }

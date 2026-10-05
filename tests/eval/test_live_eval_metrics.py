@@ -6,7 +6,9 @@ import pytest
 from tests.eval.live_eval import (
     _compute_metrics,
     _is_clarification_result,
+    _patch_data_dependencies,
     _patch_lifecycle_runners,
+    _restore_data_dependencies,
     _restore_lifecycle_runners,
 )
 from tests.eval.scenarios import SCENARIO_BY_ID
@@ -94,6 +96,29 @@ def test_comparison_stub_patches_and_restores_actual_call_site() -> None:
         _restore_lifecycle_runners(originals)
 
     assert chat_handlers._run_comparison_branch is original_comparison
+
+
+def test_live_eval_data_fixture_prevents_real_rag_or_policy_sql_calls() -> None:
+    import app.services.chat.ai._policy_resolver as policy_resolver
+
+    originals: dict[str, Any] = {}
+    original_rag_lookup = policy_resolver.rag_lookup
+    original_compare_lookup = policy_resolver._find_compare_targets_by_policy_names
+
+    try:
+        _patch_data_dependencies(originals)
+        policies, evidences = asyncio.run(policy_resolver.rag_lookup("정책 찾아줘"))
+        compare_targets = asyncio.run(
+            policy_resolver._find_compare_targets_by_policy_names("A와 B 비교")
+        )
+    finally:
+        _restore_data_dependencies(originals)
+
+    assert policies[0]["slug"] == "live-eval-policy-001"
+    assert evidences[0]["source_url"] == "fixture://live-eval/policy-001"
+    assert compare_targets == (None, None)
+    assert policy_resolver.rag_lookup is original_rag_lookup
+    assert policy_resolver._find_compare_targets_by_policy_names is original_compare_lookup
 
 
 def test_live_comparison_scenarios_expect_successful_policy_payload() -> None:
