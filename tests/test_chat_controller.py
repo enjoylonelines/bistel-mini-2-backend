@@ -380,6 +380,10 @@ def test_to_message_item_preserves_suggested_actions_and_policy_selection() -> N
         structured_json={
             "suggested_actions": ["eligibility", "apply"],
             "policy_selection": {"intent": "compare", "candidates": candidates},
+            "evidence_review": {
+                "verdict": "REVIEW_REQUIRED",
+                "reasons": ["incomplete_evidence_provenance"],
+            },
         },
     )
 
@@ -387,6 +391,10 @@ def test_to_message_item_preserves_suggested_actions_and_policy_selection() -> N
 
     assert item.suggested_actions == ["eligibility", "apply"]
     assert item.policy_selection == {"intent": "compare", "candidates": candidates}
+    assert item.evidence_review == {
+        "verdict": "REVIEW_REQUIRED",
+        "reasons": ["incomplete_evidence_provenance"],
+    }
 
 
 def test_to_message_item_defaults_suggested_actions_when_absent() -> None:

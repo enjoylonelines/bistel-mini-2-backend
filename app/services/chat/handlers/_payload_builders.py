@@ -9,6 +9,7 @@ from app.ai.nodes.chat.constants import (
     INTENT_TO_API_ACTION as _INTENT_TO_API_ACTION,
 )
 from app.ai.states.chat_state import ChatGraphState, Intent
+from app.services.chat.handlers._evidence_review import review_evidence_completeness
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +25,7 @@ async def build_assistant_payload(
     api_action = None if is_prompt else _INTENT_TO_API_ACTION.get(intent)
     content = state.get("branch_content") or ""
     disclaimer = False
+    evidence_review = state.get("evidence_review") or review_evidence_completeness(state)
     if (
         intent != "unclear"
         and not is_prompt
@@ -36,6 +38,8 @@ async def build_assistant_payload(
                 extra={"intent": intent, "phrases": assertive},
             )
             disclaimer = True
+    if evidence_review and evidence_review.get("verdict") != "PASS":
+        disclaimer = True
     # suggested_actions: secondary_intents에서 파생된 후속 행동 목록
     suggested_actions = list(state.get("branch_suggested_actions") or [])
 
@@ -66,6 +70,7 @@ async def build_assistant_payload(
         "eligibility_result": state.get("branch_eligibility_result"),
         "suggested_actions": suggested_actions,
         "policy_selection": policy_selection,
+        "evidence_review": evidence_review,
     }
     return {"assistant_payload": payload}
 

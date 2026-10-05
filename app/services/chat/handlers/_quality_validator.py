@@ -10,6 +10,7 @@ import logging
 from typing import Any
 
 from app.ai.states.chat_state import Intent
+from app.services.chat.handlers._evidence_review import review_evidence_completeness
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +28,11 @@ _ASSERTIVE_ELIGIBILITY_PHRASES = (
 
 _SAFE_FALLBACK_CONTENT = (
     "죄송합니다. 답변을 생성하는 중 문제가 발생했어요. 잠시 후 다시 시도해 주세요."
+)
+
+_EVIDENCE_BLOCKED_CONTENT = (
+    "정책 근거를 확인하지 못해 답변을 제공할 수 없어요. "
+    "공식 안내를 확인한 뒤 다시 시도해 주세요."
 )
 
 _VALID_RESPONSE_TYPES: frozenset[str] = frozenset({
@@ -109,6 +115,31 @@ def validate_branch_result(
     if len(cleaned_suggested) != len(suggested):
         issues.append("duplicate_suggested_action_removed")
         corrections["branch_suggested_actions"] = cleaned_suggested
+
+    # 4. 정책성 결과의 근거 완결성. 문장 의미를 추론하지 않고, 정책 결과가
+    #    retrievable provenance와 함께 나오는지만 확인한다.
+    evidence_review = review_evidence_completeness(
+        {**state, **corrections}, intent=intent
+    )
+    corrections["evidence_review"] = evidence_review
+    verdict = evidence_review["verdict"]
+    if verdict == "REVIEW_REQUIRED":
+        issues.append("evidence_review_required")
+    elif verdict == "BLOCKED":
+        issues.append("evidence_missing_blocked")
+        corrections.update(
+            {
+                "branch_content": _EVIDENCE_BLOCKED_CONTENT,
+                "branch_user_status": None,
+                "branch_policies": [],
+                "branch_evidences": [],
+                "branch_apply_card": None,
+                "branch_easy_summary": None,
+                "branch_key_points": [],
+                "branch_eligibility_result": None,
+                "branch_suggested_actions": [],
+            }
+        )
 
     if not issues:
         return None

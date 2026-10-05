@@ -96,6 +96,13 @@ def test_assistant_payload_skips_disclaimer_for_structured_eligibility_result(
             "request_id": 99,
             "criteria": [],
         },
+        "branch_evidences": [
+            {
+                "chunk_id": 1,
+                "snippet": "지원 대상 근거",
+                "source_url": "https://example.com/policy",
+            }
+        ],
     }
 
     with caplog.at_level(logging.WARNING, logger=chat_handlers.__name__):

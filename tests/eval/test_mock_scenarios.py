@@ -67,11 +67,22 @@ def _fake_branch_result(
     candidates: list[dict] | None = None,
     pending: dict | None = None,
 ) -> dict[str, Any]:
+    requires_evidence = bool(policies or apply_card or eligibility_result)
     result: dict[str, Any] = {
         **state,
         "branch_content": content,
         "branch_policies": policies or [],
-        "branch_evidences": [],
+        "branch_evidences": (
+            [
+                {
+                    "chunk_id": 990001,
+                    "snippet": "평가용 정책 근거",
+                    "source_url": "fixture://mock-scenarios/policy-001",
+                }
+            ]
+            if requires_evidence
+            else []
+        ),
     }
     if apply_card is not None:
         result["branch_apply_card"] = apply_card
@@ -1123,6 +1134,13 @@ class TestQualityValidator:
             "branch_content": "자격 확인 결과입니다.",
             "branch_policies": [],
             "branch_eligibility_result": {"status": "ELIGIBLE"},
+            "branch_evidences": [
+                {
+                    "chunk_id": 990001,
+                    "snippet": "평가용 자격 근거",
+                    "source_url": "fixture://mock-scenarios/eligibility-001",
+                }
+            ],
             "slot_request": None,
             "profile_confirm": None,
             "branch_suggested_actions": ["eligibility", "apply"],

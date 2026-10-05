@@ -37,6 +37,7 @@ def unwrap_message_meta(structured_json: dict | None) -> dict:
         "eligibility_result": structured_json.get("eligibility_result"),
         "suggested_actions": structured_json.get("suggested_actions", []),
         "policy_selection": structured_json.get("policy_selection"),
+        "evidence_review": structured_json.get("evidence_review"),
     }
 
 

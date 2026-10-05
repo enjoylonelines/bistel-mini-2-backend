@@ -97,6 +97,7 @@ class ChatGraphState(TypedDict):
     branch_apply_card: NotRequired[dict[str, Any] | None]
     branch_suggested_actions: NotRequired[list[str]]         # secondary_intents → 후속 액션
     branch_policy_candidates: NotRequired[list[dict[str, Any]]]  # 정책 선택지 (모호한 참조 시)
+    evidence_review: NotRequired[dict[str, Any]]
     assistant_payload: NotRequired[dict[str, Any]]
     evidences_to_save: NotRequired[list[dict[str, Any]]]
     policy_links_to_save: NotRequired[list[dict[str, Any]]]

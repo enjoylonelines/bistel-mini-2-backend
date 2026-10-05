@@ -312,12 +312,12 @@ def test_e2e_compare_routes_and_builds_diff_payload(
 
     comparison_graph.run.assert_awaited_once()
     payload = result["assistant_payload"]
-    assert "A가 임신 중에" in payload["content"]
-    slugs = [p["slug"] for p in payload["policies"]]
-    assert "WLF1" in slugs and "WLF2" in slugs
+    assert "근거를 확인하지 못해" in payload["content"]
+    assert payload["policies"] == []
     assert payload["actions"] == ["compare"]
-    assert payload["disclaimer"] is False
-    assert result["policy_links_to_save"][0]["action_type"] == "COMPARED"
+    assert payload["disclaimer"] is True
+    assert payload["evidence_review"]["verdict"] == "BLOCKED"
+    assert result["policy_links_to_save"] == []
 
 
 # ---------------------------------------------------------------------------

@@ -240,7 +240,13 @@ def test_scenario6_suggested_actions_excluded_from_primary() -> None:
         "history": [],
         "branch_content": "부모급여 자격을 분석했어요.",
         "branch_policies": [{"slug": "WLF1", "policy_name": "부모급여"}],
-        "branch_evidences": [],
+        "branch_evidences": [
+            {
+                "chunk_id": 1,
+                "snippet": "부모급여 자격 근거",
+                "source_url": "https://example.com/policy",
+            }
+        ],
         "branch_suggested_actions": ["eligibility", "apply"],  # eligibility가 primary와 중복
         "supervisor_decision": {"intent": "eligibility", "raw": "{}"},
     }
@@ -316,7 +322,13 @@ def test_scenario8_eligibility_with_result_not_flagged() -> None:
         "history": [],
         "branch_content": "조건에 해당될 수 있어요.",
         "branch_policies": [{"slug": "WLF1", "policy_name": "부모급여"}],
-        "branch_evidences": [],
+        "branch_evidences": [
+            {
+                "chunk_id": 1,
+                "snippet": "부모급여 자격 근거",
+                "source_url": "https://example.com/policy",
+            }
+        ],
         "branch_eligibility_result": {
             "status": "COMPLETED",
             "user_status": "ELIGIBLE",
