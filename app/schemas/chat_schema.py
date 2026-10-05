@@ -101,6 +101,16 @@ class AssistantMessageKeyPoint(BaseModel):
     content: str
 
 
+class AssistantMessageClaimEvidence(BaseModel):
+    """A displayed policy sentence and chunks available to support review."""
+
+    claim_id: str
+    claim_text: str
+    claim_type: str
+    candidate_chunk_ids: list[str] = Field(default_factory=list)
+    linkage_status: str
+
+
 class ApplyCard(BaseModel):
     policy_id: str
     policy_name: str
@@ -140,6 +150,7 @@ class AssistantMessage(BaseModel):
     suggested_actions: list[str] = Field(default_factory=list)
     policy_selection: dict | None = None
     evidence_review: dict[str, Any] | None = None
+    claim_evidence_links: list[AssistantMessageClaimEvidence] = Field(default_factory=list)
 
 
 class ChatMessageSendRequest(BaseModel):
@@ -184,6 +195,7 @@ class ChatMessageItem(BaseModel):
     suggested_actions: list[str] = Field(default_factory=list)
     policy_selection: dict | None = None
     evidence_review: dict[str, Any] | None = None
+    claim_evidence_links: list[AssistantMessageClaimEvidence] = Field(default_factory=list)
 
     model_config = ConfigDict(from_attributes=True)
 

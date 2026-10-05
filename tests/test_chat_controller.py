@@ -384,6 +384,15 @@ def test_to_message_item_preserves_suggested_actions_and_policy_selection() -> N
                 "verdict": "REVIEW_REQUIRED",
                 "reasons": ["incomplete_evidence_provenance"],
             },
+            "claim_evidence_links": [
+                {
+                    "claim_id": "response_sentence:1",
+                    "claim_text": "확인해 주세요.",
+                    "claim_type": "policy_response_sentence",
+                    "candidate_chunk_ids": ["101"],
+                    "linkage_status": "CANDIDATE",
+                }
+            ],
         },
     )
 
@@ -395,6 +404,7 @@ def test_to_message_item_preserves_suggested_actions_and_policy_selection() -> N
         "verdict": "REVIEW_REQUIRED",
         "reasons": ["incomplete_evidence_provenance"],
     }
+    assert item.claim_evidence_links[0].candidate_chunk_ids == ["101"]
 
 
 def test_to_message_item_defaults_suggested_actions_when_absent() -> None:

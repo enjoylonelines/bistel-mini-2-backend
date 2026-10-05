@@ -35,6 +35,7 @@ def fallback_payload() -> dict:
         "suggested_actions": [],
         "policy_selection": None,
         "evidence_review": None,
+        "claim_evidence_links": [],
     }
 
 
@@ -56,6 +57,7 @@ def build_structured_json(decision: dict, payload: dict) -> dict:
         "suggested_actions": payload.get("suggested_actions", []),
         "policy_selection": payload.get("policy_selection"),
         "evidence_review": payload.get("evidence_review"),
+        "claim_evidence_links": payload.get("claim_evidence_links", []),
     }
 
 
@@ -173,6 +175,8 @@ def build_assistant_response(
         eligibility_result=payload.get("eligibility_result"),
         suggested_actions=payload.get("suggested_actions", []),
         policy_selection=payload.get("policy_selection"),
+        evidence_review=payload.get("evidence_review"),
+        claim_evidence_links=payload.get("claim_evidence_links", []),
     )
 
 

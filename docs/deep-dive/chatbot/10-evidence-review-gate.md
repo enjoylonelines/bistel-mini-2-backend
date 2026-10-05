@@ -55,6 +55,19 @@ persistence, not policy-answer correctness, source freshness, or retrieval
 quality on the original corpus. Those require the original policy/chunk snapshot
 and a claim-level evaluation set.
 
-The next bounded step is to define claim units and map each unit to evidence
-chunk IDs before allowing a claim-level `PASS`. Until then, this response-level
-gate is intentionally conservative.
+## Claim trace slice
+
+The response now persists `claim_evidence_links` for every displayed sentence
+in a policy-scoped response that already has a response-level `PASS`. Each link
+contains a stable sentence ID, the displayed sentence, and the complete source
+chunk IDs available to the response.
+
+`linkage_status: CANDIDATE` is intentional: it records candidate provenance,
+not semantic entailment. The current gate still permits a response because it
+has complete response-level provenance; it does **not** claim that every
+sentence has been factually proved by every linked chunk.
+
+The next evaluation, once the original policy/chunk corpus is available, is a
+golden claim set that labels each `(claim, chunk)` pair as supported,
+contradicted, or insufficient. Only then should a claim-level support verdict
+replace the candidate linkage status.

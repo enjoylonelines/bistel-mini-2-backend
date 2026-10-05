@@ -9,6 +9,7 @@ from app.ai.nodes.chat.constants import (
     INTENT_TO_API_ACTION as _INTENT_TO_API_ACTION,
 )
 from app.ai.states.chat_state import ChatGraphState, Intent
+from app.services.chat.handlers._claim_evidence import build_claim_evidence_links
 from app.services.chat.handlers._evidence_review import review_evidence_completeness
 
 logger = logging.getLogger(__name__)
@@ -26,6 +27,7 @@ async def build_assistant_payload(
     content = state.get("branch_content") or ""
     disclaimer = False
     evidence_review = state.get("evidence_review") or review_evidence_completeness(state)
+    claim_evidence_links = build_claim_evidence_links(state, evidence_review)
     if (
         intent != "unclear"
         and not is_prompt
@@ -71,6 +73,7 @@ async def build_assistant_payload(
         "suggested_actions": suggested_actions,
         "policy_selection": policy_selection,
         "evidence_review": evidence_review,
+        "claim_evidence_links": claim_evidence_links,
     }
     return {"assistant_payload": payload}
 
