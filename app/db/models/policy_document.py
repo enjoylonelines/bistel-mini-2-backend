@@ -33,6 +33,7 @@ class PolicyDocument(Base):
     ingest_status: Mapped[str] = mapped_column(
         String(30), nullable=False, server_default="PENDING_TEXT"
     )
+    ingest_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     embedded_metadata_version: Mapped[str | None] = mapped_column(
         String(30), nullable=True
     )

@@ -66,6 +66,19 @@ def test_chunk_replacement_marks_document_ready_for_embedding() -> None:
     assert "SET ingest_status = 'CHUNK_READY'" in conn.cursor_instance.queries[-1]
 
 
+def test_document_ingest_failure_is_persisted() -> None:
+    conn = _RecordingConnection()
+
+    asyncio.run(
+        PolicyDocumentRepository.mark_document_ingest_failed(
+            conn, document_id=42, error="download timed out"
+        )
+    )
+
+    assert "SET ingest_status = 'FAILED'" in conn.cursor_instance.queries[-1]
+    assert conn.cursor_instance.params[-1] == ("download timed out", 42)
+
+
 def test_embedding_targets_exclude_superseded_documents() -> None:
     conn = _RecordingConnection(rows=[(True,)])
 

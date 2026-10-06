@@ -110,6 +110,7 @@ raw_text text
 source_fingerprint varchar(64) [note: 'source URL/title version identity']
 content_hash varchar(64) [note: 'extracted raw_text hash']
 ingest_status varchar(30) [note: 'PENDING_TEXT, TEXT_READY, CHUNK_READY, EMBEDDED']
+ingest_error text
 embedded_metadata_version varchar(30)
 is_current boolean [not null, default: true]
 superseded_at timestamp

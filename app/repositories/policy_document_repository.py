@@ -157,11 +157,31 @@ class PolicyDocumentRepository:
                 SET raw_text = %s,
                     content_hash = md5(%s),
                     ingest_status = 'TEXT_READY',
+                    ingest_error = NULL,
                     embedded_metadata_version = NULL,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE document_id = %s
                 """,
                 (raw_text, raw_text, document_id),
+            )
+
+    @staticmethod
+    async def mark_document_ingest_failed(
+        conn,
+        document_id: int,
+        error: str,
+    ) -> None:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                    UPDATE policy_document
+                    SET ingest_status = 'FAILED',
+                        ingest_error = %s,
+                        embedded_metadata_version = NULL,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE document_id = %s
+                """,
+                (error[:2000], document_id),
             )
 
     @staticmethod
@@ -337,6 +357,7 @@ class PolicyDocumentRepository:
                 """
                     UPDATE policy_document
                     SET ingest_status = 'CHUNK_READY',
+                        ingest_error = NULL,
                         embedded_metadata_version = NULL,
                         updated_at = CURRENT_TIMESTAMP
                     WHERE document_id = %s

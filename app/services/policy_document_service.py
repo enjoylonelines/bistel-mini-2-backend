@@ -268,6 +268,11 @@ class PolicyDocumentService:
                         )
                 except ValueError as exc:
                     for document in documents:
+                        await PolicyDocumentRepository.mark_document_ingest_failed(
+                            conn=conn,
+                            document_id=document["document_id"],
+                            error=str(exc),
+                        )
                         skipped.append(
                             self._reference_skip_item(
                                 document=document,
@@ -276,6 +281,12 @@ class PolicyDocumentService:
                         )
                 except Exception as exc:
                     self.logger.exception("정책 관련 문서 처리 중 오류 발생")
+                    for document in documents:
+                        await PolicyDocumentRepository.mark_document_ingest_failed(
+                            conn=conn,
+                            document_id=document["document_id"],
+                            error=f"{type(exc).__name__}: {exc}",
+                        )
                     failed.append(
                         {
                             "source_url": source_url,
