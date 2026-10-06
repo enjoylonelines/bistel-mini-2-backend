@@ -62,6 +62,7 @@ class PolicyRagRepository:
                        AND embedding.id = c.chunk_id::text
                     WHERE c.chunk_text IS NOT NULL
                       AND btrim(c.chunk_text) <> ''
+                      AND d.is_current = TRUE
                       AND (%s::varchar IS NULL OR d.source_type = %s::varchar)
                       AND (
                           embedding.id IS NULL
@@ -137,6 +138,7 @@ class PolicyRagRepository:
                 JOIN policy p ON p.policy_id = d.policy_id
                 WHERE c.chunk_text IS NOT NULL
                   AND btrim(c.chunk_text) <> ''
+                  AND d.is_current = TRUE
                   AND (%s::varchar IS NULL OR d.source_type = %s::varchar)
                 ORDER BY c.chunk_id
                 LIMIT %s
@@ -169,3 +171,22 @@ class PolicyRagRepository:
             "chunk_hash",
         ]
         return [dict(zip(columns, row, strict=True)) for row in rows]
+
+    @staticmethod
+    async def mark_documents_embedded(
+        conn,
+        document_ids: list[int],
+    ) -> None:
+        if not document_ids:
+            return
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                    UPDATE policy_document
+                    SET ingest_status = 'EMBEDDED',
+                        embedded_metadata_version = %s,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE document_id = ANY(%s)
+                """,
+                (POLICY_RAG_METADATA_VERSION, document_ids),
+            )

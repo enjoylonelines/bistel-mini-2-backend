@@ -45,6 +45,7 @@ class PolicyDocumentRepository:
                     LEFT JOIN policy_document existing_document
                         ON existing_document.policy_id = cp.policy_id
                        AND existing_document.source_type = 'POLICY_DETAIL'
+                       AND existing_document.is_current = TRUE
                     WHERE p.is_active = TRUE
                       AND (
                         %s::boolean = TRUE
@@ -97,6 +98,7 @@ class PolicyDocumentRepository:
                         SELECT d.source_url, MIN(d.document_id) AS first_document_id
                         FROM policy_document d
                         WHERE d.source_type = 'POLICY_REFERENCE'
+                          AND d.is_current = TRUE
                           AND d.source_url IS NOT NULL
                           AND btrim(d.source_url) <> ''
                           AND lower(d.source_title) LIKE '%%.pdf%%'
@@ -120,6 +122,7 @@ class PolicyDocumentRepository:
                     JOIN policy_document d ON d.source_url = u.source_url
                     JOIN policy p ON p.policy_id = d.policy_id
                     WHERE d.source_type = 'POLICY_REFERENCE'
+                      AND d.is_current = TRUE
                       AND (
                         %s::boolean = TRUE
                         OR d.raw_text IS NULL
@@ -150,12 +153,15 @@ class PolicyDocumentRepository:
         async with conn.cursor() as cur:
             await cur.execute(
                 """
-                    UPDATE policy_document
-                    SET raw_text = %s,
-                        updated_at = CURRENT_TIMESTAMP
-                    WHERE document_id = %s
+                UPDATE policy_document
+                SET raw_text = %s,
+                    content_hash = md5(%s),
+                    ingest_status = 'TEXT_READY',
+                    embedded_metadata_version = NULL,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE document_id = %s
                 """,
-                (raw_text, document_id),
+                (raw_text, raw_text, document_id),
             )
 
     @staticmethod
@@ -326,5 +332,16 @@ class PolicyDocumentRepository:
                         json.dumps(metadata, ensure_ascii=False),
                     ),
                 )
+
+            await cur.execute(
+                """
+                    UPDATE policy_document
+                    SET ingest_status = 'CHUNK_READY',
+                        embedded_metadata_version = NULL,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE document_id = %s
+                """,
+                (document_id,),
+            )
 
         return len(chunk_documents)

@@ -235,7 +235,6 @@ class PolicyImportRepository:
                   AND r.detail_status = 'COMPLETED'
             """,
         )
-
         return await cls._fetch_count(
             conn,
             """
@@ -301,16 +300,90 @@ class PolicyImportRepository:
 
     @classmethod
     async def replace_policy_documents(cls, conn) -> int:
+        """Version reference documents instead of deleting their evidence history.
+
+        A raw-data refresh must never remove POLICY_DETAIL documents or chunks
+        that existing chat messages cite.  Changed reference URLs/titles are
+        superseded and a new current document is created for ingestion.
+        """
         await cls._execute(
             conn,
             """
-                DELETE FROM policy_document d
-                USING policy_raw_import r
-                JOIN policy p ON p.policy_code = r.serv_id
-                WHERE d.policy_id = p.policy_id
-                  AND r.list_json IS NOT NULL
-                  AND r.detail_json IS NOT NULL
-                  AND r.detail_status = 'COMPLETED'
+                WITH document_items AS (
+                    SELECT
+                        p.policy_id,
+                        NULLIF(form_item.item->>'servSeDetailNm', '')
+                            AS source_title,
+                        NULLIF(form_item.item->>'servSeDetailLink', '')
+                            AS source_url
+                    FROM policy_raw_import r
+                    JOIN policy p ON p.policy_code = r.serv_id
+                    CROSS JOIN LATERAL jsonb_array_elements(
+                        COALESCE(r.detail_json->'basfrmList', '[]'::jsonb)
+                    ) AS form_item(item)
+                    WHERE r.list_json IS NOT NULL
+                      AND r.detail_json IS NOT NULL
+                      AND r.detail_status = 'COMPLETED'
+                ),
+                current_fingerprints AS (
+                    SELECT
+                        policy_id,
+                        md5(concat_ws('|', policy_id::text, 'POLICY_REFERENCE',
+                            source_url, source_title)) AS source_fingerprint
+                    FROM document_items
+                    WHERE source_title IS NOT NULL
+                )
+                UPDATE policy_document d
+                SET is_current = FALSE,
+                    superseded_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE d.source_type = 'POLICY_REFERENCE'
+                  AND d.is_current = TRUE
+                  AND EXISTS (
+                    SELECT 1
+                    FROM policy_raw_import r
+                    JOIN policy p ON p.policy_code = r.serv_id
+                    WHERE p.policy_id = d.policy_id
+                      AND r.list_json IS NOT NULL
+                      AND r.detail_json IS NOT NULL
+                      AND r.detail_status = 'COMPLETED'
+                  )
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM current_fingerprints f
+                    WHERE f.policy_id = d.policy_id
+                      AND f.source_fingerprint = d.source_fingerprint
+                  )
+            """,
+        )
+        # Keep historical policy_document/chunk rows for chat evidence, but
+        # remove their vectors immediately so retrieval cannot return a
+        # superseded source revision. PGVector may not be initialized yet.
+        await cls._execute(
+            conn,
+            """
+                DO $$
+                BEGIN
+                    IF to_regclass('public.langchain_pg_collection') IS NOT NULL
+                       AND to_regclass('public.langchain_pg_embedding') IS NOT NULL THEN
+                        DELETE FROM langchain_pg_embedding embedding
+                        USING langchain_pg_collection collection,
+                              policy_document document
+                        WHERE embedding.collection_id = collection.uuid
+                          AND collection.name = 'policy_documents'
+                          AND document.is_current = FALSE
+                          AND document.superseded_at = transaction_timestamp()
+                          AND (
+                              embedding.cmetadata->>'document_id'
+                                  = document.document_id::text
+                              OR embedding.id IN (
+                                  SELECT chunk_id::text
+                                  FROM policy_document_chunk
+                                  WHERE document_id = document.document_id
+                              )
+                          );
+                    END IF;
+                END $$;
             """,
         )
 
@@ -335,14 +408,12 @@ class PolicyImportRepository:
                       AND r.detail_status = 'COMPLETED'
                 ),
                 normalized_documents AS (
-                    SELECT
-                        (policy_id * 10000 + 3000 + item_order)::bigint
-                            AS document_id,
+                    SELECT DISTINCT
                         policy_id,
                         source_title,
                         source_url,
-                        'POLICY_REFERENCE' AS source_type,
-                        NULL::text AS raw_text
+                        md5(concat_ws('|', policy_id::text, 'POLICY_REFERENCE',
+                            source_url, source_title)) AS source_fingerprint
                     FROM document_items
                     WHERE source_title IS NOT NULL
                       AND NOT (
@@ -356,23 +427,32 @@ class PolicyImportRepository:
                 ),
                 inserted AS (
                     INSERT INTO policy_document (
-                        document_id,
                         policy_id,
                         source_title,
                         source_url,
                         source_type,
                         raw_text,
+                        source_fingerprint,
+                        ingest_status,
+                        is_current,
                         updated_at
                     )
                     SELECT
-                        document_id,
                         policy_id,
                         source_title,
                         source_url,
-                        source_type,
-                        raw_text,
+                        'POLICY_REFERENCE',
+                        NULL,
+                        source_fingerprint,
+                        'PENDING_TEXT',
+                        TRUE,
                         CURRENT_TIMESTAMP
                     FROM normalized_documents
+                    ON CONFLICT (policy_id, source_fingerprint) WHERE is_current
+                    DO UPDATE SET
+                        source_title = EXCLUDED.source_title,
+                        source_url = EXCLUDED.source_url,
+                        updated_at = CURRENT_TIMESTAMP
                     RETURNING document_id
                 )
                 SELECT COUNT(*) FROM inserted

@@ -107,6 +107,12 @@ source_title varchar(255)
 source_url text
 source_type varchar(50) [note: 'PDF, HTML, NOTICE']
 raw_text text
+source_fingerprint varchar(64) [note: 'source URL/title version identity']
+content_hash varchar(64) [note: 'extracted raw_text hash']
+ingest_status varchar(30) [note: 'PENDING_TEXT, TEXT_READY, CHUNK_READY, EMBEDDED']
+embedded_metadata_version varchar(30)
+is_current boolean [not null, default: true]
+superseded_at timestamp
 collected_at timestamp [not null, default: `CURRENT_TIMESTAMP`]
 updated_at timestamp [not null, default: `CURRENT_TIMESTAMP`]
 }
