@@ -1,6 +1,7 @@
 from typing import Any
 
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text, update
+from uuid import uuid4
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.eligibility_request import EligibilityRequest
@@ -35,6 +36,8 @@ class AiRequestRepository:
                     profile_conflict_json jsonb,
                     result_json jsonb,
                     error_message text,
+                    execution_token varchar(36),
+                    execution_claimed_at timestamp,
                     request_status varchar(50) NOT NULL DEFAULT 'READY',
                     created_at timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     updated_at timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -73,6 +76,8 @@ class AiRequestRepository:
             "ALTER TABLE eligibility_request ADD COLUMN IF NOT EXISTS result_json jsonb",
             "ALTER TABLE eligibility_request ADD COLUMN IF NOT EXISTS error_message text",
             "ALTER TABLE recommendation_request ADD COLUMN IF NOT EXISTS source_ref_id varchar(100)",
+            "ALTER TABLE recommendation_request ADD COLUMN IF NOT EXISTS execution_token varchar(36)",
+            "ALTER TABLE recommendation_request ADD COLUMN IF NOT EXISTS execution_claimed_at timestamp",
             "ALTER TABLE eligibility_request ADD COLUMN IF NOT EXISTS source_ref_id varchar(100)",
             "ALTER TABLE recommendation_request ALTER COLUMN raw_query DROP NOT NULL",
             "ALTER TABLE eligibility_request ALTER COLUMN raw_query DROP NOT NULL",
@@ -153,9 +158,28 @@ class AiRequestRepository:
         request: AiRequestModel,
         status: RequestStatus,
         error_message: str | None = None,
-    ) -> AiRequestModel:
+        execution_token: str | None = None,
+    ) -> AiRequestModel | None:
+        if execution_token is not None and isinstance(request, RecommendationRequest):
+            result = await db.execute(
+                update(RecommendationRequest)
+                .where(
+                    RecommendationRequest.request_id == request.request_id,
+                    RecommendationRequest.request_status == RequestStatus.PROCESSING.value,
+                    RecommendationRequest.execution_token == execution_token,
+                )
+                .values(request_status=status.value, error_message=error_message)
+                .returning(RecommendationRequest.request_id)
+            )
+            if result.scalar_one_or_none() is None:
+                return None
+            await db.refresh(request)
+            return request
         request.request_status = status.value
         request.error_message = error_message
+        if isinstance(request, RecommendationRequest) and status == RequestStatus.PROCESSING:
+            request.execution_token = None
+            request.execution_claimed_at = None
         await db.flush()
         await db.refresh(request)
         return request
@@ -168,7 +192,33 @@ class AiRequestRepository:
         merged_condition_json: dict[str, Any] | None = None,
         profile_conflict_json: list[dict[str, Any]] | None = None,
         raw_query: str | None = None,
-    ) -> AiRequestModel:
+        execution_token: str | None = None,
+    ) -> AiRequestModel | None:
+        if execution_token is not None and isinstance(request, RecommendationRequest):
+            values: dict[str, Any] = {}
+            if parsed_query_json is not None:
+                values["parsed_query_json"] = parsed_query_json
+            if merged_condition_json is not None:
+                values["merged_condition_json"] = merged_condition_json
+            if profile_conflict_json is not None:
+                values["profile_conflict_json"] = profile_conflict_json
+            if raw_query is not None:
+                values["raw_query"] = raw_query
+            if values:
+                result = await db.execute(
+                    update(RecommendationRequest)
+                    .where(
+                        RecommendationRequest.request_id == request.request_id,
+                        RecommendationRequest.request_status == RequestStatus.PROCESSING.value,
+                        RecommendationRequest.execution_token == execution_token,
+                    )
+                    .values(**values)
+                    .returning(RecommendationRequest.request_id)
+                )
+                if result.scalar_one_or_none() is None:
+                    return None
+                await db.refresh(request)
+            return request
         if parsed_query_json is not None:
             request.parsed_query_json = parsed_query_json
         if merged_condition_json is not None:
@@ -186,12 +236,52 @@ class AiRequestRepository:
         db: AsyncSession,
         request: AiRequestModel,
         result_json: dict[str, Any],
-    ) -> AiRequestModel:
+        execution_token: str | None = None,
+    ) -> AiRequestModel | None:
+        if execution_token is not None and isinstance(request, RecommendationRequest):
+            result = await db.execute(
+                update(RecommendationRequest)
+                .where(
+                    RecommendationRequest.request_id == request.request_id,
+                    RecommendationRequest.request_status == RequestStatus.PROCESSING.value,
+                    RecommendationRequest.execution_token == execution_token,
+                )
+                .values(result_json=result_json)
+                .returning(RecommendationRequest.request_id)
+            )
+            if result.scalar_one_or_none() is None:
+                return None
+            await db.refresh(request)
+            return request
         if isinstance(request, (RecommendationRequest, EligibilityRequest)):
             request.result_json = result_json
         await db.flush()
         await db.refresh(request)
         return request
+
+    async def claim_recommendation_execution(
+        self,
+        db: AsyncSession,
+        request_id: int,
+    ) -> str | None:
+        """Atomically admit one local runner for a PROCESSING recommendation.
+
+        This is an ownership fence, not a queue or a global capacity control.
+        The caller must commit this short transaction before performing any
+        external work so a competing runner never waits on a long DB lock.
+        """
+        token = str(uuid4())
+        result = await db.execute(
+            update(RecommendationRequest)
+            .where(
+                RecommendationRequest.request_id == request_id,
+                RecommendationRequest.request_status == RequestStatus.PROCESSING.value,
+                RecommendationRequest.execution_token.is_(None),
+            )
+            .values(execution_token=token, execution_claimed_at=func.now())
+            .returning(RecommendationRequest.execution_token)
+        )
+        return result.scalar_one_or_none()
 
     def _model_for(self, request_type: str):
         try:

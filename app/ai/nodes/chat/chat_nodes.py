@@ -213,7 +213,11 @@ def _llm() -> ChatOpenAI:
     return ChatOpenAI(**kwargs)
 
 
-async def _mark_recommendation_failed(request_id: int, error_message: str) -> None:
+async def _mark_recommendation_failed(
+    request_id: int,
+    error_message: str,
+    execution_token: str | None = None,
+) -> None:
     async with AsyncSessionLocal() as db:
         try:
             await _lifecycle_service_class()().mark_failed(
@@ -221,6 +225,7 @@ async def _mark_recommendation_failed(request_id: int, error_message: str) -> No
                 request_type="recommendation",
                 request_id=request_id,
                 error_message=error_message,
+                execution_token=execution_token,
             )
             await db.commit()
         except Exception:

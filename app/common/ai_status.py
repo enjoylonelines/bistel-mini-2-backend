@@ -8,6 +8,7 @@ class RequestStatus(StrEnum):
     COMPLETED = "COMPLETED"
     FOLLOW_UP_REQUIRED = "FOLLOW_UP_REQUIRED"
     FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
 
 
 class AssessmentStatus(StrEnum):

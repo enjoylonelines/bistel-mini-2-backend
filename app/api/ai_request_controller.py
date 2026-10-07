@@ -23,7 +23,10 @@ from app.schemas.ai_request_schema import (
     RecommendationRequestCreate,
 )
 from app.schemas.ai_contract import RequestStatus
-from app.services.ai_request_lifecycle_service import AiRequestLifecycleService
+from app.services.ai_request_lifecycle_service import (
+    AiRequestLifecycleService,
+    RequestExecutionOwnershipLost,
+)
 from app.services.chat.chat_service import ChatService
 
 
@@ -84,6 +87,7 @@ def _eligibility_source_ref(
 
 async def process_ai_condition_request(request_type: str, request_id: int) -> None:
     service = AiRequestLifecycleService()
+    execution_token: str | None = None
     try:
         async with AsyncSessionLocal() as db:
             try:
@@ -94,11 +98,30 @@ async def process_ai_condition_request(request_type: str, request_id: int) -> No
                 )
                 await db.execute(text("SET LOCAL lock_timeout = '5s'"))
                 await db.execute(text("SET LOCAL statement_timeout = '60s'"))
+                if request_type == "recommendation":
+                    execution_token = await service.claim_recommendation_execution(
+                        db=db,
+                        request_id=request_id,
+                    )
+                    # Claiming must be committed before any slow/external work.
+                    # Otherwise a competing task can be blocked by this row lock.
+                    await db.commit()
+                    if execution_token is None:
+                        logger.info(
+                            "AI background task skipped without execution claim: request_id=%s",
+                            request_id,
+                        )
+                        return
+                    # SET LOCAL is transaction-scoped, so restore the DB
+                    # safeguards after committing the short ownership claim.
+                    await db.execute(text("SET LOCAL lock_timeout = '5s'"))
+                    await db.execute(text("SET LOCAL statement_timeout = '60s'"))
                 await asyncio.wait_for(
                     service.process_condition_request(
                         db=db,
                         request_type=request_type,
                         request_id=request_id,
+                        execution_token=execution_token,
                     ),
                     timeout=AI_BACKGROUND_TIMEOUT_SECONDS,
                 )
@@ -108,6 +131,14 @@ async def process_ai_condition_request(request_type: str, request_id: int) -> No
                     request_type,
                     request_id,
                 )
+            except RequestExecutionOwnershipLost:
+                await db.rollback()
+                logger.info(
+                    "AI background task lost execution ownership: request_type=%s request_id=%s",
+                    request_type,
+                    request_id,
+                )
+                return
             except Exception:
                 await db.rollback()
                 raise
@@ -121,6 +152,7 @@ async def process_ai_condition_request(request_type: str, request_id: int) -> No
             request_type,
             request_id,
             AI_REQUEST_USER_ERROR_MESSAGE,
+            execution_token=execution_token,
         )
     except Exception:
         logger.exception(
@@ -132,6 +164,7 @@ async def process_ai_condition_request(request_type: str, request_id: int) -> No
             request_type,
             request_id,
             AI_REQUEST_USER_ERROR_MESSAGE,
+            execution_token=execution_token,
         )
 
 
@@ -139,6 +172,7 @@ async def _mark_ai_request_failed(
     request_type: str,
     request_id: int,
     error_message: str,
+    execution_token: str | None = None,
 ) -> None:
     async with AsyncSessionLocal() as db:
         service = AiRequestLifecycleService()
@@ -148,6 +182,7 @@ async def _mark_ai_request_failed(
                 request_type=request_type,
                 request_id=request_id,
                 error_message=error_message,
+                execution_token=execution_token,
             )
             await db.commit()
         except Exception:
@@ -255,6 +290,22 @@ async def get_recommendation_request(
         user_id=current_user.user_id,
     )
     return success_response(data=response, meta=_recommendation_polling_meta(response))
+
+
+@recommendation_router.post("/requests/{request_id}/cancel")
+async def cancel_recommendation_request(
+    request_id: int,
+    db: DbSessionDep,
+    current_user: CurrentUserDep,
+) -> JSONResponse:
+    service = AiRequestLifecycleService()
+    snapshot = await service.cancel_recommendation_request(
+        db=db,
+        request_id=request_id,
+        user_id=current_user.user_id,
+    )
+    await db.commit()
+    return success_response(data=snapshot, meta=_request_meta(snapshot))
 
 
 @eligibility_router.post("/requests", status_code=status.HTTP_202_ACCEPTED)
@@ -409,11 +460,19 @@ async def _recommendation_sse_stream(
                         request_id=int(snapshot.request_id),
                     )
                     await inner_db.commit()
+                    execution_token = await service.claim_recommendation_execution(
+                        db=inner_db,
+                        request_id=int(snapshot.request_id),
+                    )
+                    await inner_db.commit()
+                    if execution_token is None:
+                        raise RequestExecutionOwnershipLost()
                     await asyncio.wait_for(
                         service.process_condition_request(
                             db=inner_db,
                             request_type="recommendation",
                             request_id=int(snapshot.request_id),
+                            execution_token=execution_token,
                         ),
                         timeout=AI_BACKGROUND_TIMEOUT_SECONDS,
                     )
@@ -424,6 +483,9 @@ async def _recommendation_sse_stream(
                         user_id=user_id,
                     )
                     await queue.put({"type": "done", "payload": result.model_dump(mode="json")})
+                except RequestExecutionOwnershipLost:
+                    await inner_db.rollback()
+                    await queue.put({"type": "error", "message": "요청이 취소되었어요."})
                 except Exception as exc:
                     await inner_db.rollback()
                     logger.exception("Recommendation SSE stream failed")

@@ -71,6 +71,10 @@ AI_REQUEST_USER_ERROR_MESSAGE = (
 logger = logging.getLogger(__name__)
 
 
+class RequestExecutionOwnershipLost(Exception):
+    """A different terminal transition made this runner stale."""
+
+
 class AiRequestLifecycleService:
     def __init__(
         self,
@@ -169,12 +173,14 @@ class AiRequestLifecycleService:
         db: AsyncSession,
         request_type: str,
         request_id: int,
+        execution_token: str | None = None,
     ) -> AiRequestSnapshot:
         return await self._set_status(
             db,
             request_type,
             request_id,
             RequestStatus.COMPLETED,
+            execution_token=execution_token,
         )
 
     async def mark_follow_up_required(
@@ -182,12 +188,14 @@ class AiRequestLifecycleService:
         db: AsyncSession,
         request_type: str,
         request_id: int,
+        execution_token: str | None = None,
     ) -> AiRequestSnapshot:
         return await self._set_status(
             db,
             request_type,
             request_id,
             RequestStatus.FOLLOW_UP_REQUIRED,
+            execution_token=execution_token,
         )
 
     async def submit_recommendation_answers(
@@ -393,6 +401,7 @@ class AiRequestLifecycleService:
         request_type: str,
         request_id: int,
         error_message: str | None = None,
+        execution_token: str | None = None,
     ) -> AiRequestSnapshot:
         return await self._set_status(
             db,
@@ -400,6 +409,39 @@ class AiRequestLifecycleService:
             request_id,
             RequestStatus.FAILED,
             error_message=AI_REQUEST_USER_ERROR_MESSAGE if error_message else None,
+            execution_token=execution_token,
+        )
+
+    async def claim_recommendation_execution(
+        self,
+        db: AsyncSession,
+        request_id: int,
+    ) -> str | None:
+        return await self.repository.claim_recommendation_execution(db, request_id)
+
+    async def cancel_recommendation_request(
+        self,
+        db: AsyncSession,
+        request_id: int,
+        user_id: int,
+    ) -> AiRequestSnapshot:
+        request = await self._get_request_or_raise(db, "recommendation", request_id)
+        if request.user_id != user_id:
+            raise self._not_found("recommendation", request_id)
+        if RequestStatus(request.request_status) not in {
+            RequestStatus.READY,
+            RequestStatus.PROCESSING,
+        }:
+            raise AppException(
+                status_code=status.HTTP_409_CONFLICT,
+                code=ErrorCode.CONFLICT,
+                message="처리 중인 요청만 취소할 수 있어요.",
+            )
+        return await self._set_status(
+            db,
+            "recommendation",
+            request_id,
+            RequestStatus.CANCELLED,
         )
 
     async def get_request(
@@ -615,8 +657,15 @@ class AiRequestLifecycleService:
         db: AsyncSession,
         request_type: str,
         request_id: int,
+        execution_token: str | None = None,
     ) -> AiRequestSnapshot:
         request = await self._get_request_or_raise(db, request_type, request_id)
+        if execution_token is not None and (
+            request_type != "recommendation"
+            or request.request_status != RequestStatus.PROCESSING.value
+            or getattr(request, "execution_token", None) != execution_token
+        ):
+            raise RequestExecutionOwnershipLost()
         parsed_query_json = request.parsed_query_json or {}
         selected_conditions = parsed_query_json.get("selected_conditions")
         profile_snapshot = await self._condition_profile_snapshot(
@@ -669,19 +718,23 @@ class AiRequestLifecycleService:
             "follow_up_answers": follow_up_answers,
             "follow_up_denials": follow_up_denials,
         }
-        await self.repository.update_payload(
+        payload = await self._update_payload_for_execution(
             db=db,
             request=request,
+            execution_token=execution_token,
             parsed_query_json=parsed_result,
             merged_condition_json=condition_result.merged_condition_json,
             profile_conflict_json=profile_conflict_json,
         )
+        if payload is None:
+            raise RequestExecutionOwnershipLost()
         # 입력 파싱 게이트: 아직 추가질문을 안 거쳤을 때만.
         if condition_result.follow_up_candidates and not follow_up_resolved:
             return await self.mark_follow_up_required(
                 db,
                 request_type,
                 request_id,
+                execution_token=execution_token,
             )
         if request_type == "recommendation":
             result_json = await self._recommendation_graph().run(
@@ -701,24 +754,31 @@ class AiRequestLifecycleService:
             if not follow_up_resolved:
                 gate_questions = self._recommendation_missing_questions(result_json)
                 if gate_questions:
-                    await self.repository.update_payload(
+                    payload = await self._update_payload_for_execution(
                         db=db,
                         request=request,
+                        execution_token=execution_token,
                         parsed_query_json={
                             **parsed_result,
                             "questions": gate_questions,
                         },
                     )
+                    if payload is None:
+                        raise RequestExecutionOwnershipLost()
                     return await self.mark_follow_up_required(
                         db,
                         request_type,
                         request_id,
+                        execution_token=execution_token,
                     )
-            await self.repository.update_result(
+            result = await self._update_result_for_execution(
                 db=db,
                 request=request,
                 result_json=result_json,
+                execution_token=execution_token,
             )
+            if result is None:
+                raise RequestExecutionOwnershipLost()
         elif request_type == "eligibility":
             follow_up_needed = await self._save_eligibility_assessment(
                 db=db,
@@ -733,8 +793,14 @@ class AiRequestLifecycleService:
                     db,
                     request_type,
                     request_id,
+                    execution_token=execution_token,
                 )
-        return await self.mark_completed(db, request_type, request_id)
+        return await self.mark_completed(
+            db,
+            request_type,
+            request_id,
+            execution_token=execution_token,
+        )
 
     async def _save_eligibility_assessment(
         self,
@@ -1098,19 +1164,69 @@ class AiRequestLifecycleService:
         request_id: int,
         request_status: RequestStatus,
         error_message: str | None = None,
+        execution_token: str | None = None,
     ) -> AiRequestSnapshot:
         request = await self._get_request_or_raise(db, request_type, request_id)
-        request = await self.repository.update_status(
-            db=db,
-            request=request,
-            status=request_status,
-            error_message=(
-                AI_REQUEST_USER_ERROR_MESSAGE
-                if request_status == RequestStatus.FAILED and error_message
-                else error_message
-            ),
+        error_message = (
+            AI_REQUEST_USER_ERROR_MESSAGE
+            if request_status == RequestStatus.FAILED and error_message
+            else error_message
         )
+        if execution_token is None:
+            request = await self.repository.update_status(
+                db=db,
+                request=request,
+                status=request_status,
+                error_message=error_message,
+            )
+        else:
+            request = await self.repository.update_status(
+                db=db,
+                request=request,
+                status=request_status,
+                error_message=error_message,
+                execution_token=execution_token,
+            )
+        if request is None:
+            raise RequestExecutionOwnershipLost()
         return self.to_snapshot(request_type, request)
+
+    async def _update_payload_for_execution(
+        self,
+        *,
+        db: AsyncSession,
+        request: AiRequestModel,
+        execution_token: str | None,
+        parsed_query_json: dict[str, Any] | None = None,
+        merged_condition_json: dict[str, Any] | None = None,
+        profile_conflict_json: list[dict[str, Any]] | None = None,
+        raw_query: str | None = None,
+    ) -> AiRequestModel | None:
+        kwargs = {
+            "db": db,
+            "request": request,
+            "parsed_query_json": parsed_query_json,
+            "merged_condition_json": merged_condition_json,
+            "profile_conflict_json": profile_conflict_json,
+        }
+        if raw_query is not None:
+            kwargs["raw_query"] = raw_query
+        if execution_token is not None:
+            kwargs["execution_token"] = execution_token
+        return await self.repository.update_payload(**kwargs)
+
+    async def _update_result_for_execution(
+        self,
+        *,
+        db: AsyncSession,
+        request: AiRequestModel,
+        result_json: dict[str, Any],
+        execution_token: str | None,
+    ) -> AiRequestModel | None:
+        kwargs = {"db": db, "request": request, "result_json": result_json}
+        if execution_token is not None:
+            kwargs["execution_token"] = execution_token
+        return await self.repository.update_result(**kwargs)
 
     async def _get_request_or_raise(
         self,
@@ -1197,6 +1313,8 @@ class AiRequestLifecycleService:
             error_message=(
                 AI_REQUEST_USER_ERROR_MESSAGE
                 if request_status == RequestStatus.FAILED and request.error_message
+                else "요청을 취소했어요."
+                if request_status == RequestStatus.CANCELLED
                 else None
             ),
         )
@@ -1369,6 +1487,8 @@ class AiRequestLifecycleService:
             return "follow_up"
         if request_status == RequestStatus.COMPLETED:
             return "done"
+        if request_status == RequestStatus.CANCELLED:
+            return "cancelled"
         return "error"
 
     def _recommendation_results(

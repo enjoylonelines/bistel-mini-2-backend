@@ -75,6 +75,7 @@ def _request_namespace() -> SimpleNamespace:
         result_json={},
         request_status=RequestStatus.READY.value,
         error_message=None,
+        execution_token=None,
         policy_id=None,
     )
 
@@ -119,8 +120,11 @@ class _FakeRepository:
         request: SimpleNamespace,
         status: RequestStatus,
         error_message: str | None = None,
+        execution_token: str | None = None,
     ) -> SimpleNamespace:
         request.request_status = status.value
+        if status == RequestStatus.PROCESSING:
+            request.execution_token = None
         if error_message:
             request.error_message = error_message
         return request
@@ -129,9 +133,10 @@ class _FakeRepository:
         self,
         db: Any,
         request: SimpleNamespace,
-        parsed_query_json: dict[str, Any],
-        merged_condition_json: dict[str, Any],
-        profile_conflict_json: list[dict[str, Any]],
+        parsed_query_json: dict[str, Any] | None = None,
+        merged_condition_json: dict[str, Any] | None = None,
+        profile_conflict_json: list[dict[str, Any]] | None = None,
+        execution_token: str | None = None,
     ) -> SimpleNamespace:
         request.parsed_query_json = parsed_query_json
         request.merged_condition_json = merged_condition_json
@@ -143,9 +148,18 @@ class _FakeRepository:
         db: Any,
         request: SimpleNamespace,
         result_json: dict[str, Any],
+        execution_token: str | None = None,
     ) -> SimpleNamespace:
         request.result_json = result_json
         return request
+
+    async def claim_recommendation_execution(
+        self, db: Any, request_id: int
+    ) -> str | None:
+        if self.request.execution_token is not None:
+            return None
+        self.request.execution_token = "test-execution-token"
+        return self.request.execution_token
 
 
 class _FakeSession:
@@ -319,7 +333,11 @@ def test_branch_recommend_graph_failure_returns_fallback(
 
     mark_failed_calls: list[tuple[int, str]] = []
 
-    async def _capture_mark_failed(request_id: int, error_message: str) -> None:
+    async def _capture_mark_failed(
+        request_id: int,
+        error_message: str,
+        execution_token: str | None = None,
+    ) -> None:
         mark_failed_calls.append((request_id, error_message))
 
     monkeypatch.setattr(

@@ -86,7 +86,7 @@ class AiRequestSnapshot(BaseModel):
     error_message: str | None = None
 
 
-RecommendationPollingStatus = Literal["loading", "done", "error", "follow_up"]
+RecommendationPollingStatus = Literal["loading", "done", "error", "follow_up", "cancelled"]
 
 
 class RecommendationEvidenceItem(BaseModel):

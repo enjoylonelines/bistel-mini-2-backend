@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+import pytest
 
 import app.api.ai_request_controller as ai_request_controller
 from app.ai.utils.progress import emit_progress
@@ -13,7 +14,74 @@ from app.core.dependencies import get_current_user
 from app.db.session import get_db_session
 from app.schemas.ai_contract import ConditionResult, EvidenceChunk, RequestStatus
 from app.schemas.ai_request_schema import EligibilityResultResponse
-from app.services.ai_request_lifecycle_service import AiRequestLifecycleService
+from app.services.ai_request_lifecycle_service import (
+    AiRequestLifecycleService,
+    RequestExecutionOwnershipLost,
+)
+
+
+def test_recommendation_runner_rejects_stale_execution_token() -> None:
+    request = SimpleNamespace(
+        request_id=123,
+        request_status=RequestStatus.CANCELLED.value,
+        execution_token="current-owner",
+    )
+
+    class FakeRepository:
+        async def find_by_id(self, db, request_type, request_id):
+            return request
+
+    service = AiRequestLifecycleService(repository=FakeRepository())
+
+    import asyncio
+
+    with pytest.raises(RequestExecutionOwnershipLost):
+        asyncio.run(
+            service.process_condition_request(
+                db=SimpleNamespace(),
+                request_type="recommendation",
+                request_id=123,
+                execution_token="stale-owner",
+            )
+        )
+
+
+def test_cancel_recommendation_marks_durable_terminal_status() -> None:
+    request = SimpleNamespace(
+        request_id=123,
+        request_status=RequestStatus.PROCESSING.value,
+        user_id=7,
+        source_type="FORM",
+        source_ref_id=None,
+        parsed_query_json={},
+        merged_condition_json={},
+        profile_conflict_json=[],
+        result_json=None,
+        error_message=None,
+    )
+
+    class FakeRepository:
+        async def find_by_id(self, db, request_type, request_id):
+            return request
+
+        async def update_status(self, db, request, status, error_message=None):
+            request.request_status = status.value
+            request.error_message = error_message
+            return request
+
+    service = AiRequestLifecycleService(repository=FakeRepository())
+
+    import asyncio
+
+    snapshot = asyncio.run(
+        service.cancel_recommendation_request(
+            db=SimpleNamespace(),
+            request_id=123,
+            user_id=7,
+        )
+    )
+
+    assert snapshot.status == RequestStatus.CANCELLED
 
 
 def test_create_eligibility_request_uses_common_lifecycle(monkeypatch) -> None:

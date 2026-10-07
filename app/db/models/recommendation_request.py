@@ -48,6 +48,11 @@ class RecommendationRequest(Base):
         nullable=True,
     )
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # A short-lived runner ownership fence.  It is deliberately not a queue or
+    # a cross-process concurrency limit: it only prevents a stale runner from
+    # persisting a later result for the same request.
+    execution_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    execution_claimed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     request_status: Mapped[str] = mapped_column(
         String(50),
         nullable=False,

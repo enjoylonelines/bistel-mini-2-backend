@@ -33,6 +33,7 @@ from app.services.chat.ai._graph_clients import (
     get_eligibility_graph,
     get_lifecycle_service,
 )
+from app.services.ai_request_lifecycle_service import RequestExecutionOwnershipLost
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,7 @@ async def run_recommendation_lifecycle(
     follow_up_resolved: bool = False,
 ) -> tuple[AiRequestSnapshot | None, str | None]:
     request_id: int | None = None
+    execution_token: str | None = None
     try:
         async with AsyncSessionLocal() as db:
             try:
@@ -67,6 +69,14 @@ async def run_recommendation_lifecycle(
                 )
                 await db.commit()
 
+                execution_token = await lifecycle.claim_recommendation_execution(
+                    db=db,
+                    request_id=request_id,
+                )
+                await db.commit()
+                if execution_token is None:
+                    raise RequestExecutionOwnershipLost()
+
                 await db.execute(text(f"SET LOCAL lock_timeout = '{_RECOMMEND_LOCK_TIMEOUT}'"))
                 await db.execute(text(f"SET LOCAL statement_timeout = '{_RECOMMEND_STATEMENT_TIMEOUT}'"))
                 snapshot = await asyncio.wait_for(
@@ -74,6 +84,7 @@ async def run_recommendation_lifecycle(
                         db=db,
                         request_type="recommendation",
                         request_id=request_id,
+                        execution_token=execution_token,
                     ),
                     timeout=_RECOMMEND_LIFECYCLE_TIMEOUT_SECONDS,
                 )
@@ -82,10 +93,17 @@ async def run_recommendation_lifecycle(
             except Exception:
                 await db.rollback()
                 raise
+    except RequestExecutionOwnershipLost:
+        logger.info("chat branch_recommend lost execution ownership: %s", request_id)
+        return None, "temporary_failure"
     except Exception as exc:
         logger.exception("chat branch_recommend lifecycle failed")
         if request_id is not None:
-            await _mark_recommendation_failed(request_id, str(exc))
+            await _mark_recommendation_failed(
+                request_id,
+                str(exc),
+                execution_token=execution_token,
+            )
         return None, "temporary_failure"
 
 
