@@ -84,6 +84,90 @@ def test_cancel_recommendation_marks_durable_terminal_status() -> None:
     assert snapshot.status == RequestStatus.CANCELLED
 
 
+def test_late_rerank_completion_cannot_overwrite_cancelled_request(monkeypatch) -> None:
+    """The DB conditional write loses when cancellation wins the terminal race."""
+    request = SimpleNamespace(
+        request_id=123,
+        request_status=RequestStatus.PROCESSING.value,
+        execution_token="owner",
+        user_id=7,
+        source_type="FORM",
+        source_ref_id=None,
+        raw_query="지원 추천",
+        parsed_query_json={"selected_conditions": {"region": "seoul"}},
+        merged_condition_json={},
+        profile_conflict_json=[],
+        result_json=None,
+        error_message=None,
+    )
+    captured: dict[str, object] = {"status_calls": 0}
+
+    class FakeRepository:
+        async def find_by_id(self, db, request_type, request_id):
+            return request
+
+        async def update_payload(self, db, request, **kwargs):
+            return request
+
+        async def update_result(self, db, request, result_json, execution_token):
+            request.request_status = RequestStatus.CANCELLED.value
+            return None
+
+        async def update_status(self, db, request, status, **kwargs):
+            captured["status_calls"] = int(captured["status_calls"]) + 1
+            return request
+
+    class FakeConditionAgent:
+        async def analyze(self, condition_input):
+            return ConditionResult(
+                parsed_query_json={"selected_conditions": {"region": "seoul"}},
+                merged_condition_json={"region": "seoul"},
+            )
+
+    class FakeGraph:
+        async def run(self, **kwargs):
+            return {
+                "results": [
+                    {
+                        "policy_id": "100",
+                        "policy_name": "테스트 정책",
+                        "candidate_status": "CANDIDATE",
+                        "assessment_status": "LIKELY_MATCH",
+                    }
+                ]
+            }
+
+    async def fake_profile_snapshot(self, **kwargs):
+        return None
+
+    monkeypatch.setattr(
+        AiRequestLifecycleService,
+        "_condition_profile_snapshot",
+        fake_profile_snapshot,
+    )
+    service = AiRequestLifecycleService(
+        repository=FakeRepository(),
+        condition_agent=FakeConditionAgent(),
+        recommendation_graph=FakeGraph(),
+    )
+
+    import asyncio
+
+    with pytest.raises(RequestExecutionOwnershipLost):
+        asyncio.run(
+            service.process_condition_request(
+                db=SimpleNamespace(),
+                request_type="recommendation",
+                request_id=123,
+                execution_token="owner",
+            )
+        )
+
+    assert request.request_status == RequestStatus.CANCELLED.value
+    assert request.result_json is None
+    assert captured["status_calls"] == 0
+
+
 def test_create_eligibility_request_uses_common_lifecycle(monkeypatch) -> None:
     captured: dict[str, object] = {}
 

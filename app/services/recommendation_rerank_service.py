@@ -3,6 +3,7 @@ import copy
 import json
 import logging
 from dataclasses import dataclass
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from app.common.ai_status import AssessmentStatus
@@ -44,9 +45,17 @@ class RecommendationRerankService:
         self,
         model: str = "gpt-5.4-mini",
         timeout_seconds: float = 180,
+        llm_invoker: Callable[
+            [list[tuple[str, str]]],
+            Awaitable[LlmRecommendationRerankResult | dict[str, Any]],
+        ]
+        | None = None,
     ) -> None:
         self.model = model
         self.timeout_seconds = timeout_seconds
+        # Test/experiment seam. Production leaves this unset and uses the
+        # configured provider below; it is not a provider selection setting.
+        self._llm_invoker = llm_invoker
         self.logger = logging.getLogger(
             f"{__name__}.RecommendationRerankService"
         )
@@ -140,13 +149,14 @@ class RecommendationRerankService:
                 result_limit=result_limit,
             )
         except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
             self.logger.warning(
                 "LLM rerank failed, using fallback: %s: %s",
                 type(exc).__name__,
                 exc,
                 exc_info=True,
             )
-            return self._fallback(base_result_json, result_limit, str(exc))
+            return self._fallback(base_result_json, result_limit, error)
 
     async def _call_llm(
         self,
@@ -155,20 +165,6 @@ class RecommendationRerankService:
         result_limit: int,
         user_context: dict[str, Any] | None = None,
     ) -> LlmRecommendationRerankResult:
-        from langchain_openai import ChatOpenAI
-
-        llm_kwargs: dict[str, Any] = {
-            "model": self.model,
-            "temperature": 0,
-            "max_tokens": 3500,
-            "timeout": self.timeout_seconds,
-        }
-        if settings.openai_api_key:
-            llm_kwargs["api_key"] = settings.openai_api_key
-
-        structured_llm = ChatOpenAI(**llm_kwargs).with_structured_output(
-            LlmRecommendationRerankResult
-        )
         messages = [
             (
                 "system",
@@ -294,10 +290,29 @@ class RecommendationRerankService:
                 ),
             ),
         ]
-        result = await asyncio.wait_for(
-            structured_llm.ainvoke(messages),
-            timeout=self.timeout_seconds,
-        )
+        if self._llm_invoker is not None:
+            result = await asyncio.wait_for(
+                self._llm_invoker(messages),
+                timeout=self.timeout_seconds,
+            )
+        else:
+            from langchain_openai import ChatOpenAI
+
+            llm_kwargs: dict[str, Any] = {
+                "model": self.model,
+                "temperature": 0,
+                "max_tokens": 3500,
+                "timeout": self.timeout_seconds,
+            }
+            if settings.openai_api_key:
+                llm_kwargs["api_key"] = settings.openai_api_key
+            structured_llm = ChatOpenAI(**llm_kwargs).with_structured_output(
+                LlmRecommendationRerankResult
+            )
+            result = await asyncio.wait_for(
+                structured_llm.ainvoke(messages),
+                timeout=self.timeout_seconds,
+            )
         if isinstance(result, LlmRecommendationRerankResult):
             return result
         if isinstance(result, dict):
