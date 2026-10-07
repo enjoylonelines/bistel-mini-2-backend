@@ -229,7 +229,6 @@ class PolicyImportRepository:
                 USING policy_raw_import r
                 JOIN policy p ON p.policy_code = r.serv_id
                 WHERE d.policy_id = p.policy_id
-                  AND d.source_type = 'POLICY_REFERENCE'
                   AND r.list_json IS NOT NULL
                   AND r.detail_json IS NOT NULL
                   AND r.detail_status = 'COMPLETED'
@@ -462,6 +461,65 @@ class PolicyImportRepository:
     # ============================================================
     # 3. tag / checklist 저장
     # ============================================================
+    @classmethod
+    async def sync_policy_domain_entities(cls, conn) -> None:
+        """Project imported policies into the reusable entity/relation core.
+
+        Only source fields with direct API provenance are projected here; no
+        condition or eligibility relation is inferred from free text.
+        """
+        await cls._execute(
+            conn,
+            """
+                INSERT INTO domain_entity (
+                    entity_type, canonical_key, display_name, attributes_json
+                )
+                SELECT 'Policy', p.policy_code, p.policy_name,
+                    jsonb_build_object('policy_id', p.policy_id)
+                FROM policy p
+                ON CONFLICT (entity_type, canonical_key) DO UPDATE
+                SET display_name = EXCLUDED.display_name,
+                    attributes_json = EXCLUDED.attributes_json,
+                    updated_at = CURRENT_TIMESTAMP
+            """,
+        )
+        await cls._execute(
+            conn,
+            """
+                INSERT INTO domain_entity (
+                    entity_type, canonical_key, display_name, attributes_json
+                )
+                SELECT 'Organization', p.provider_name, p.provider_name,
+                    jsonb_build_object('provider_type', p.provider_type)
+                FROM policy p
+                WHERE p.provider_name IS NOT NULL AND btrim(p.provider_name) <> ''
+                ON CONFLICT (entity_type, canonical_key) DO UPDATE
+                SET display_name = EXCLUDED.display_name,
+                    attributes_json = EXCLUDED.attributes_json,
+                    updated_at = CURRENT_TIMESTAMP
+            """,
+        )
+        await cls._execute(
+            conn,
+            """
+                INSERT INTO domain_relation (
+                    subject_entity_id, predicate, object_entity_id, attributes_json,
+                    confidence, review_status
+                )
+                SELECT policy_entity.entity_id, 'provided_by', provider_entity.entity_id,
+                    '{}'::jsonb, 1.0, 'SOURCE_VERIFIED'
+                FROM policy p
+                JOIN domain_entity policy_entity
+                  ON policy_entity.entity_type = 'Policy'
+                 AND policy_entity.canonical_key = p.policy_code
+                JOIN domain_entity provider_entity
+                  ON provider_entity.entity_type = 'Organization'
+                 AND provider_entity.canonical_key = p.provider_name
+                WHERE p.provider_name IS NOT NULL AND btrim(p.provider_name) <> ''
+                ON CONFLICT (subject_entity_id, predicate, object_entity_id) DO NOTHING
+            """,
+        )
+
     @classmethod
     async def replace_policy_tags(cls, conn) -> int:
         await cls._execute(

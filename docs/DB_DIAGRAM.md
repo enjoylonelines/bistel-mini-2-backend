@@ -128,6 +128,75 @@ metadata_json jsonb
 indexes {
 (document_id, chunk_index) [unique]
 }
+
+Table source_snapshot {
+snapshot_id bigint [pk, increment]
+source_name varchar(100) [not null]
+source_locator text [not null]
+source_fingerprint varchar(64) [not null]
+payload_hash varchar(64) [not null]
+mapping_version varchar(50) [not null]
+fetched_at timestamp [not null]
+}
+
+Table ingestion_attempt {
+attempt_id bigint [pk, increment]
+snapshot_id bigint [not null]
+stage varchar(50) [not null]
+status varchar(30) [not null]
+error_message text
+counters_json jsonb [not null]
+started_at timestamp [not null]
+finished_at timestamp
+}
+
+Table domain_entity {
+entity_id bigint [pk, increment]
+entity_type varchar(100) [not null]
+canonical_key varchar(255) [not null]
+display_name text [not null]
+attributes_json jsonb [not null]
+status varchar(30) [not null]
+}
+
+Table domain_relation {
+relation_id bigint [pk, increment]
+subject_entity_id bigint [not null]
+predicate varchar(100) [not null]
+object_entity_id bigint [not null]
+attributes_json jsonb [not null]
+confidence decimal(5,4)
+review_status varchar(30) [not null]
+}
+
+Table evidence_span {
+evidence_span_id bigint [pk, increment]
+document_id bigint
+chunk_id bigint
+snapshot_id bigint
+char_start integer
+char_end integer
+quoted_text text [not null]
+content_hash varchar(64) [not null]
+}
+
+Table decision_run {
+decision_run_id bigint [pk, increment]
+decision_type varchar(50) [not null]
+subject_ref varchar(255) [not null]
+input_snapshot_json jsonb [not null]
+status varchar(30) [not null]
+model_or_rule_version varchar(100)
+}
+
+Table decision_claim {
+decision_claim_id bigint [pk, increment]
+decision_run_id bigint [not null]
+claim_type varchar(100) [not null]
+claim_text text [not null]
+confidence decimal(5,4)
+review_status varchar(30) [not null]
+}
 }
 
 Table chat_session {

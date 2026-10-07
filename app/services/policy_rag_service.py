@@ -7,9 +7,10 @@ from langchain_postgres import PGVector
 
 from app.common.psycopg_pool_conf import psycopg_pool
 from app.core.config import settings
-from app.db.session import engine
+from app.db.session import vector_engine
 from app.repositories.policy_rag_repository import PolicyRagRepository
 from app.repositories.policy_rag_repository import POLICY_RAG_METADATA_VERSION
+from app.repositories.evidence_trace_repository import EvidenceTraceRepository
 from app.schemas.policy_rag_schema import (
     PolicyRagEmbeddingItem,
     PolicyRagEmbeddingResponse,
@@ -134,6 +135,12 @@ class PolicyRagService:
             results=search_results,
         )
 
+    async def record_search_evidence(self, response: PolicyRagSearchResponse) -> int:
+        """Explicitly persist a retrieval trace after a caller chooses to audit it."""
+        async with psycopg_pool.connection() as conn:
+            async with conn.transaction():
+                return await EvidenceTraceRepository.record_search(conn, response)
+
     def _search_filter(
         self,
         source_type: str | None,
@@ -189,7 +196,7 @@ class PolicyRagService:
                 **embedding_kwargs,
             ),
             collection_name=POLICY_RAG_COLLECTION_NAME,
-            connection=engine,
+            connection=vector_engine,
             async_mode=True,
             use_jsonb=True,
         )

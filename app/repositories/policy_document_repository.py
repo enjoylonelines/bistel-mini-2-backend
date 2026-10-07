@@ -101,7 +101,6 @@ class PolicyDocumentRepository:
                           AND d.is_current = TRUE
                           AND d.source_url IS NOT NULL
                           AND btrim(d.source_url) <> ''
-                          AND lower(d.source_title) LIKE '%%.pdf%%'
                           AND (
                             %s::boolean = TRUE
                             OR d.raw_text IS NULL

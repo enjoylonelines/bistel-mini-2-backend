@@ -41,7 +41,7 @@ from app.api.policy_rag_controller import router as policy_rag_router
 from app.common.exceptions import register_exception_handlers
 from app.common.psycopg_pool_conf import psycopg_pool
 from app.core.config import settings
-from app.db.session import AsyncSessionLocal, engine
+from app.db.session import AsyncSessionLocal, engine, vector_engine
 from app.repositories.chat_request_repository import ChatRequestRepository
 from app.repositories.policy_repository import PolicyRepository
 from app.utils.logger import setup_logging
@@ -63,6 +63,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     finally:
         await psycopg_pool.close()
         await engine.dispose()
+        await vector_engine.dispose()
 
 
 app = FastAPI(

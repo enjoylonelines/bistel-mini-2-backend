@@ -1,4 +1,5 @@
 import json
+from hashlib import sha256
 from typing import Any
 
 from sqlalchemy import text
@@ -6,6 +7,48 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 
 class PolicyRawImportRepository:
+    @staticmethod
+    async def record_ingestion_attempt(
+        db: AsyncSession,
+        *,
+        source_locator: str,
+        stage: str,
+        payload: str,
+        counters: dict[str, int],
+    ) -> None:
+        """Persist an auditable source snapshot for a successful raw save."""
+        payload_hash = sha256(payload.encode("utf-8")).hexdigest()
+        source_fingerprint = sha256(source_locator.encode("utf-8")).hexdigest()
+        await db.execute(
+            text("""
+                WITH snapshot AS (
+                    INSERT INTO source_snapshot (
+                        source_name, source_locator, source_fingerprint,
+                        payload_hash, mapping_version
+                    ) VALUES (
+                        'data.go.kr', :source_locator, :source_fingerprint,
+                        :payload_hash, 'policy-import-v1'
+                    )
+                    ON CONFLICT (source_name, source_fingerprint, payload_hash)
+                    DO UPDATE SET fetched_at = CURRENT_TIMESTAMP
+                    RETURNING snapshot_id
+                )
+                INSERT INTO ingestion_attempt (
+                    snapshot_id, stage, status, counters_json, finished_at
+                )
+                SELECT snapshot_id, :stage, 'SUCCEEDED',
+                    CAST(:counters_json AS jsonb), CURRENT_TIMESTAMP
+                FROM snapshot
+            """),
+            {
+                "source_locator": source_locator,
+                "source_fingerprint": source_fingerprint,
+                "payload_hash": payload_hash,
+                "stage": stage,
+                "counters_json": json.dumps(counters),
+            },
+        )
+
     @staticmethod
     async def create_table(db: AsyncSession) -> None:
         await db.execute(

@@ -13,8 +13,28 @@ from sqlalchemy.orm import DeclarativeBase
 from app.core.config import settings
 
 
+def vector_database_url(database_url: str) -> str:
+    """Use psycopg for PGVector's extension initialization.
+
+    langchain-postgres executes an advisory lock and ``CREATE EXTENSION`` in
+    one statement. asyncpg rejects that multi-statement initialization while
+    psycopg accepts it. Keep the application's normal asyncpg ORM engine
+    unchanged and isolate the compatibility choice to the vector store.
+    """
+    if database_url.startswith("postgresql+asyncpg://"):
+        return database_url.replace("postgresql+asyncpg://", "postgresql+psycopg://", 1)
+    if database_url.startswith("postgresql://"):
+        return database_url.replace("postgresql://", "postgresql+psycopg://", 1)
+    return database_url
+
+
 engine = create_async_engine(
     settings.database_url,
+    pool_pre_ping=True,
+)
+
+vector_engine = create_async_engine(
+    vector_database_url(settings.database_url),
     pool_pre_ping=True,
 )
 

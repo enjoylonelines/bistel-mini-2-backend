@@ -1,10 +1,14 @@
 import base64
 import json
 import logging
+import subprocess
+import sys
+import tempfile
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from io import BytesIO
+from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import Depends
@@ -548,9 +552,35 @@ class PolicyDocumentService:
     def _extract_text(self, content: bytes, file_type: str) -> PdfExtractionResult:
         if file_type == "PDF":
             return self._extract_pdf_text(content)
-        if file_type in {"HWP", "HWPX"}:
-            raise ValueError(f"{file_type} 문서 텍스트 추출은 아직 지원하지 않습니다.")
+        if file_type == "HWP":
+            return self._extract_hwp_text(content)
+        if file_type == "HWPX":
+            raise ValueError("HWPX 문서 텍스트 추출은 아직 지원하지 않습니다.")
         raise ValueError(f"지원하지 않는 문서 형식입니다: {file_type}")
+
+    def _extract_hwp_text(self, content: bytes) -> PdfExtractionResult:
+        """Extract HWP v5 text through pyhwp's bundled hwp5txt command."""
+        converter = (Path(sys.executable).parent / "hwp5txt")
+        if not converter.exists():
+            raise ValueError("HWP 추출기(hwp5txt)가 설치되어 있지 않습니다.")
+
+        with tempfile.NamedTemporaryFile(suffix=".hwp") as source:
+            source.write(content)
+            source.flush()
+            try:
+                result = subprocess.run(
+                    [str(converter), source.name],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=60,
+                    check=True,
+                )
+            except (OSError, subprocess.SubprocessError) as exc:
+                raise ValueError(f"HWP 텍스트 추출 실패: {exc}") from exc
+
+        return self._pdf_extraction_result(method="hwp5txt", text=result.stdout)
 
     def _extract_pdf_text(self, content: bytes) -> PdfExtractionResult:
         candidates = []

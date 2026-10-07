@@ -28,6 +28,7 @@ class PolicyImportService:
         policy_document_count = (
             await PolicyImportRepository.replace_policy_documents(conn)
         )
+        await PolicyImportRepository.sync_policy_domain_entities(conn)
         tag_count = await PolicyImportRepository.replace_policy_tags(conn)
         policy_rule_count = await PolicyImportRepository.replace_policy_rules(conn)
         checklist_count = (

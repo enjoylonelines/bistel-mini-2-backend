@@ -1,5 +1,6 @@
 import xml.etree.ElementTree as ET
 from typing import Any
+from urllib.parse import unquote
 
 import requests
 from fastapi import HTTPException, status
@@ -75,6 +76,14 @@ class PolicyDataService:
             await PolicyRawImportRepository.upsert_list_item(db, serv_id, item)
             saved_count += 1
 
+        await PolicyRawImportRepository.record_ingestion_attempt(
+            db,
+            source_locator=f"{cls.endpoint}/NationalWelfarelistV001",
+            stage="RAW_LIST_SAVE",
+            payload=xml_text,
+            counters={"saved_count": saved_count, "skipped_count": skipped_count},
+        )
+
         return {
             "saved_count": saved_count,
             "skipped_count": skipped_count,
@@ -101,6 +110,15 @@ class PolicyDataService:
             db,
             serv_id,
             detail_json,
+        )
+        await PolicyRawImportRepository.record_ingestion_attempt(
+            db,
+            source_locator=(
+                f"{cls.endpoint}/NationalWelfaredetailedV001?servId={serv_id}"
+            ),
+            stage="RAW_DETAIL_SAVE",
+            payload=xml_text,
+            counters={"saved_count": 1, "skipped_count": 0},
         )
 
         return {
@@ -177,4 +195,8 @@ class PolicyDataService:
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="DATA_GO_KR_SERVICE_KEY is not configured.",
             )
-        return settings.data_go_kr_service_key
+        # data.go.kr exposes both URL-encoded and decoded variants of the
+        # general authentication key. ``requests`` encodes query params, so
+        # normalize the configured value to its decoded form first to avoid
+        # double-encoding an otherwise valid key.
+        return unquote(settings.data_go_kr_service_key)
