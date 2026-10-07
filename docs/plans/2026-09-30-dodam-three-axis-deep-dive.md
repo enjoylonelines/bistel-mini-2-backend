@@ -1,7 +1,7 @@
 # Dodam AI Chatbot 3-Axis Deep Dive Plan
 
 > Date: 2026-09-30  
-> Status: planning / implementation not started  
+> Status: Cycles 0–3 have implementation/evidence artifacts on this branch; bounded AI-execution control is proposed as the next research cycle (2026-10-07)
 > Primary repository: `bistel-mini-2/bistel-mini-2-backend`  
 > Companion repository: `bistel-mini-2/bistel-mini-2-frontend`  
 > Backend baseline: `origin/develop@08ebc167384cca490303059dcb927887c300bd12`  
@@ -11,11 +11,15 @@
 
 이번 작업의 목적은 도담을 기능 수가 많은 AI 데모로 확장하는 것이 아니다.
 
-현재 구현의 구조적 결함과 이미 검증된 기능을 먼저 구분하고, 다음 세 축만 깊게 검증한다.
+현재 구현의 구조적 결함과 이미 검증된 기능을 먼저 구분하고, 다음 세 축을 먼저 깊게 검증한다.
 
 1. **Conversation / Request Lifecycle**
 2. **RAG / Retrieval Quality & Failure Attribution**
 3. **Full-stack Chat Service Delivery**
+
+이 세 축은 최종 목적이 아니라 다음 실행 계층의 전제다. durable request,
+retrieval trace, fallback 결과를 구분하지 못하면 AI 호출의 동시성·비용·지연을
+제어해도 어떤 사용자 결과를 보존했는지 증명할 수 없다.
 
 최종적으로 다음 질문에 실측과 재현 가능한 evidence로 답할 수 있어야 한다.
 
@@ -24,6 +28,34 @@
 > 답변 실패가 검색 실패인지 생성 실패인지 분리해 측정할 수 있는가?
 
 > 백엔드의 durable run과 프론트의 ephemeral SSE connection을 분리하고도 사용자 경험이 일관되게 유지되는가?
+
+다음 cycle에서는 질문을 한 단계 아래로 내린다.
+
+> 제한된 외부 LLM/RAG 실행 예산과 가변 지연 아래에서, 어떤 요청을 실행·대기·취소·fallback할지 제어하면서 사용자 결과의 정합성을 보존할 수 있는가?
+
+여기서 안정성은 단독 목적이 아니다. AI 서비스의 제한 자원(동시 in-flight
+호출, provider quota, token 비용, tail latency)을 다루기 위한 기본 계약이다.
+
+## 0.1 Current-progress reconciliation (2026-10-07)
+
+이 문서 상단의 최초 상태 표기는 더 이상 현재 branch 상태를 설명하지 못한다.
+`deep-dive/dodam-chatbot-3axis@e472bf9`에는 다음 evidence/artifact가 이미 있다.
+
+- lifecycle invariants와 focused regression: `docs/deep-dive/chatbot/03-lifecycle-fullstack-findings.md`
+- candidate-selection과 policy-scoped section retrieval의 분리:
+  `docs/deep-dive/chatbot/04-retrieval-failure-decomposition.md`
+- section-aware challenger와 synthetic/local A/B:
+  `docs/deep-dive/chatbot/06-candidate-eval-and-section-challenger.md`,
+  `08-section-aware-mechanism-probe.md`, `09-section-aware-ab-results.md`
+- original corpus 품질과 분리된 provenance/evidence review의 후속 gate:
+  `docs/deep-dive/chatbot/10-evidence-review-gate.md`
+
+이 문서에 기록된 pass count, synthetic latency, historical retrieval 값은 해당
+artifact가 가리키는 revision/environment의 증거다. 2026-10-07 현재의 운영
+성능이나 production readiness로 다시 표현하지 않는다.
+
+이번 보강은 앞의 세 축을 다시 구현하자는 계획이 아니다. 아직 측정하지 않은
+**AI execution control**을 별도 가설·측정·결정 gate로 정의하는 것이다.
 
 ---
 
@@ -796,6 +828,13 @@ Cycle 1 lifecycle contract를 frontend가 정확히 소비하도록 정리.
 
 browser → backend → retrieval → generation → persistence → reconnect까지 검증.
 
+## Cycle 5 — Bounded AI execution control
+
+Cycle 0–4의 결과를 전제로, LLM/RAG 호출을 무제한 병렬 처리하지 않는 실행
+경계를 실험한다. 이 cycle은 provider·model 교체나 worker 수 튜닝이 아니라,
+고정된 offered load에서 concurrency/deadline/fallback 정책이 만드는 trade-off를
+측정하는 작업이다. 상세 가설과 gate는 §17에 정의한다.
+
 ---
 
 # 12. Explicit non-goals
@@ -824,7 +863,7 @@ browser → backend → retrieval → generation → persistence → reconnect�
 
 Backend repo를 이 cross-repo deep dive의 primary planning source로 사용한다.
 
-예정:
+초기 예정 경로는 다음과 같았다.
 
 ```text
 docs/deep-dive/chatbot/
@@ -839,7 +878,10 @@ docs/deep-dive/chatbot/
   08-final-report.md
 ```
 
-현재 단계에서는 이 plan 문서만 작성한다.
+현재 branch에는 위 초기 구조와 달리 `00-current-state.md`부터
+`10-evidence-review-gate.md`까지의 실제 evidence 문서가 있다. 향후 Cycle 5는
+기존 결과를 덮어쓰지 않고, 별도 `11-ai-execution-control-*.md` 계열과 raw
+generated artifact로 남긴다.
 
 raw benchmark/result는 generated artifact로 분리하고 문서에는:
 
@@ -871,9 +913,10 @@ raw benchmark/result는 generated artifact로 분리하고 문서에는:
 
 ---
 
-# 15. Review gates before implementation
+# 15. Historical review gates before implementation
 
-다음 항목을 먼저 확인하고 Cycle 1 구현을 시작한다.
+다음 항목은 Cycle 1을 시작하기 전의 review gate였으며, 현재는 §0.1의
+artifact로 결과를 추적한다. 다시 열린 질문은 Cycle 5 gate와 혼동하지 않는다.
 
 1. **Baseline integration**
    - `refactor/chat-handler-result-lifecycle`의 33 unique commits 중 무엇을 가져올지
@@ -894,9 +937,9 @@ raw benchmark/result는 generated artifact로 분리하고 문서에는:
 
 ---
 
-# 16. Immediate next step
+# 16. Historical first step
 
-계획 승인 후 첫 구현은 대규모 refactor가 아니다.
+이 문서가 최초 작성됐을 때 첫 구현은 대규모 refactor가 아니었다.
 
 다음 두 작업만 한다.
 
@@ -914,6 +957,162 @@ raw benchmark/result는 generated artifact로 분리하고 문서에는:
 
 한 시나리오를 현재 코드로 재현한다.
 
-현재 구현이 이미 invariant를 만족하면 구조를 바꾸지 않는다.
+현재 구현이 이미 invariant를 만족하면 구조를 바꾸지 않았다.
 
-실패할 경우 그 failure를 첫 bounded lifecycle defect로 삼아 최소 수정한다.
+실패할 경우 그 failure를 첫 bounded lifecycle defect로 삼아 최소 수정했다.
+
+---
+
+# 17. Next deep dive — Bounded AI Execution Control
+
+## 17.1 Why this is the next lower-layer question
+
+세 축의 결과만으로는 AI 서비스가 부하·provider failure·사용자 취소 상황에서
+제한된 자원을 어떻게 사용하는지 설명할 수 없다. 특히 hosted LLM을 호출하는
+현재 구조에서 app-server CPU 사용률만으로 병목을 판단하면 안 된다. 우선
+제약으로 모델링할 대상은 다음이다.
+
+- concurrent in-flight LLM/embedding call
+- provider rate limit 및 transient failure
+- request deadline과 tail latency
+- token/call budget
+- client disconnect 또는 explicit cancel 뒤의 wasted work
+- retry가 만드는 duplicate cost와 downstream overload
+
+따라서 이 cycle의 목적은 “안정적인 챗봇”이라는 포괄적 표현이 아니다.
+
+> LLM을 가변 지연·비용을 가진 외부 실행 자원으로 다루고, 제한된 concurrency와 deadline 안에서 durable 사용자 결과를 보존하는 정책을 실측한다.
+
+## 17.2 Scope and selected execution path
+
+첫 대상은 이미 deterministic fallback을 가진 **추천 request의 LLM rerank**로
+한정한다. 현재 workflow에서 candidate search, rule filter, assessment, result
+build는 LLM rerank보다 앞서며, rerank 실패 뒤에도 rule/assessment 기반 결과가
+남아야 한다. 이 경로는 “LLM이 실패해도 전체 request가 실패해야 하는가”를
+판단하기에 가장 작은 bounded slice다.
+
+Chat token streaming과 policy summary는 동일한 control contract를 적용할 수
+있지만, 첫 실험에 동시에 포함하지 않는다. 서로 다른 UX/streaming 문제를
+섞으면 execution-control 결과를 해석할 수 없기 때문이다.
+
+```text
+recommendation request
+  → deterministic candidate/rule/assessment result
+  → admission to bounded LLM rerank lane
+  → completed LLM augmentation
+      ├── success  → augmented durable result
+      ├── deadline / provider failure → labelled deterministic fallback
+      └── caller cancel → no late overwrite; terminal state follows request contract
+```
+
+## 17.3 Research questions and non-assumptions
+
+1. 현재 구현에서 LLM rerank의 actual in-flight concurrency, queueing point,
+   timeout, retry, cancellation authority는 어디인가?
+2. offered load가 concurrency limit을 넘을 때, unbounded dispatch와 bounded
+   dispatch는 p95 completion, fallback rate, timeout/429 rate, wasted calls에
+   어떤 차이를 만드는가?
+3. LLM 실패 또는 deadline expiry 뒤에도 deterministic result가 사용자에게
+   반환되고, LLM late completion이 이를 덮어쓰지 않는가?
+4. 어느 concurrency 값이 주어진 provider/environment에서 더 높은 처리량을
+   보이는가가 아니라, 정해진 latency/cost/error budget 안에서 가장 좋은
+   completion 결과를 만드는가?
+
+이 문서는 아직 현재 코드가 unbounded이거나 특정 concurrency 값이 최적이라고
+주장하지 않는다. 먼저 topology와 baseline을 관측해야 한다.
+
+## 17.4 Contracts to preserve
+
+- LLM augmentation은 candidate/rule/assessment의 authoritative 판단을 바꾸지 않는다.
+- fallback은 정상 LLM success처럼 기록하지 않고 `fallback_used`, failure reason,
+  provider-call outcome을 distinguish한다.
+- 동일 idempotency key는 LLM rerank를 중복 실행하지 않는다.
+- caller cancellation 또는 request terminal transition 뒤의 late LLM completion은
+  durable result를 overwrite하지 않는다.
+- concurrency limit은 global/per-process/per-tenant 중 실제 scope를 명시한다.
+  multi-worker global limit이라고 추정하지 않는다.
+- queue/deadline 예산을 초과한 request의 user-visible 결과와 retry 권한을 명시한다.
+
+## 17.5 Measurement design
+
+### Controlled harness
+
+실제 provider 비용이나 production DB를 먼저 사용하지 않는다. controllable fake
+LLM/provider adapter로 다음 fault를 주입하고, isolated DB에서 durable request와
+result transition을 관측한다.
+
+- fixed delay / long-tail delay
+- timeout
+- rate limit (429)
+- transient provider failure (5xx)
+- completion 직전 cancel
+- late completion after fallback or terminal transition
+
+같은 input fixture, same arrival pattern, same deadline을 고정한 뒤 concurrency
+limit 후보(예: 1, 2, 4, 8)는 **환경별 experiment variable**로만 비교한다.
+임의의 값 하나를 production default로 정하지 않는다.
+
+실제 provider 재현은 credentials, quota, corpus provenance가 확인된 뒤 별도
+measurement으로 수행한다. fake-provider 결과는 control-flow/cost-model evidence이지
+provider latency 또는 production capacity claim이 아니다.
+
+### Metrics
+
+| Layer | Required measurement | Interpretation boundary |
+| --- | --- | --- |
+| Admission | offered requests, admitted count, max in-flight calls, queue wait p50/p95 | per-process/global scope를 함께 기록 |
+| Completion | durable terminal completion rate, success/fallback/failed/cancelled ratio, end-to-end latency p50/p95 | fallback은 success와 합치지 않음 |
+| Provider | call count/request, timeout/429/5xx rate, retry count, in-flight duration | fake provider에서는 provider quality 수치가 아님 |
+| Waste | cancelled/terminal request 뒤 시작 또는 완료된 call 수, late-write count, duplicate call count | request idempotency와 분리해 기록 |
+| Quality boundary | deterministic fallback validity, evidence-review verdict distribution | answer factuality/production retrieval quality를 대리하지 않음 |
+| Cost | known token count 또는 provider usage가 있는 경우 token/request, token spent after cancel | 가격은 provider/model/date를 붙일 때만 금액 환산 |
+
+### Decision table
+
+| Observation | Permitted next decision |
+| --- | --- |
+| Lower concurrency lowers 429/timeout and keeps p95 within agreed budget | bounded admission policy 후보로 채택 검토 |
+| Higher concurrency improves throughput but causes tail latency, provider failure, or waste amplification | concurrency increase를 거부하고 queue/deadline 정책을 검토 |
+| Fallback remains deterministic and late overwrite is zero | degradation contract 유지 |
+| Fallback leaks unsupported policy output or late completion overwrites result | capacity tuning을 멈추고 correctness defect부터 수정 |
+| No meaningful difference under controlled load | production control 변경 없이 topology/observability만 기록 |
+
+수치 목표(p95, acceptable fallback rate, maximum token waste)는 provider quota,
+사용자 SLA, 비용 예산을 확인한 뒤 human gate에서 정한다. 이 계획은 임의의
+pass threshold를 발명하지 않는다.
+
+## 17.6 Evidence and claim boundary
+
+Cycle 5 종료 시 최소 산출물은 다음이다.
+
+```text
+docs/deep-dive/chatbot/
+  11-ai-execution-control-baseline.md
+  12-ai-execution-control-fault-matrix.md
+  13-ai-execution-control-results.md
+experiments/chatbot/
+  <controlled execution harness and machine-readable result>
+```
+
+가능한 claim의 예시는 다음으로 제한한다.
+
+> 추천 rerank를 가변 지연 외부 의존성으로 모델링하고, controlled failure/load에서
+> concurrency·deadline·fallback 정책별 durable completion, tail latency, provider
+> failure, cancellation waste를 분리해 측정했다.
+
+fake provider만 사용한 경우 “운영 API 비용 절감”, “production capacity 확보”,
+“최적 worker 수”라고 주장하지 않는다. 실제 provider와 workload에서 측정한
+값은 environment, revision, quota, input distribution을 포함해 별도 표기한다.
+
+## 17.7 Human gates before implementation
+
+다음 결정은 코드 변경이나 load execution 전에 사람이 승인한다.
+
+1. 첫 대상이 recommendation rerank인지, chat generation인지
+2. 적용하려는 limit scope가 process-local인지 global인지
+3. 대표 arrival pattern과 user-visible deadline
+4. 허용 가능한 fallback semantics와 사용자 문구
+5. 실제 provider/quota를 쓰는 measurement의 비용 예산과 권한
+
+승인 전에는 current topology를 read-only로 추적하고 controlled fake-provider
+harness의 계약만 설계한다.
