@@ -24,5 +24,12 @@ lane, and verifies `RERANK_DROPPED` with zero provider calls. It distinguishes
 that case from the single-request in-flight cancellation row, which has one
 already-started fake-provider call and a blocked late write.
 
+Finally, the mixed-load points send four requests through the real `llm_rerank`
+node and shared process-local lane: delayed success, 429 fallback, timeout
+fallback, and queued cancellation. They use a fixed base result instead of
+candidate retrieval, then run the same fenced terminal-write adapter. This
+collects node admission telemetry without claiming full recommendation-graph or
+production-provider coverage.
+
 Neither slice measures or claims global concurrency, multi-worker coordination,
 provider capacity, a cost saving, or a recommended concurrency value.

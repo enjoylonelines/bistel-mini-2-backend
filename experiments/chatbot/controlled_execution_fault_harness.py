@@ -37,6 +37,7 @@ os.environ.setdefault("OPENAI_API_KEY", "controlled-fake-provider")
 
 from sqlalchemy import text
 
+from app.ai.nodes.recommendation.recommendation_nodes import RecommendationGraphNodes
 from app.common.ai_status import RequestStatus
 from app.db.session import AsyncSessionLocal
 from app.repositories.ai_request_repository import AiRequestRepository
@@ -299,6 +300,30 @@ async def _event_types(request_id: int) -> list[str]:
         return [str(value) for value in result.scalars().all()]
 
 
+async def _event_records(request_id: int) -> list[dict[str, Any]]:
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            text(
+                """
+                SELECT event_type, outcome, error_type, details_json
+                FROM recommendation_execution_event
+                WHERE request_id = :request_id
+                ORDER BY event_id
+                """
+            ),
+            {"request_id": request_id},
+        )
+        return [
+            {
+                "event_type": str(row.event_type),
+                "outcome": row.outcome,
+                "error_type": row.error_type,
+                "details": dict(row.details_json or {}),
+            }
+            for row in result
+        ]
+
+
 async def _cleanup(user_id: int) -> None:
     async with AsyncSessionLocal() as db:
         await db.execute(text("DELETE FROM users WHERE user_id = :user_id"), {"user_id": user_id})
@@ -527,6 +552,193 @@ async def _run_durable_queued_cancellation_probe() -> dict[str, Any]:
         await _cleanup(queued_user_id)
 
 
+async def _run_mixed_load_point(capacity: int) -> dict[str, Any]:
+    """Run one deterministic mixed-load point through the actual rerank node.
+
+    The node, optional lane, durable-fence read, and event repository are real.
+    Candidate retrieval and the rest of the recommendation graph are intentionally
+    outside this narrow rerank experiment; the base result is a fixed fixture.
+    """
+    lane = ProcessLocalRerankLane(capacity=capacity)
+    first_provider_started = asyncio.Event()
+    cancelled_request_queued = asyncio.Event()
+    actual_events = RecommendationExecutionEventRepository()
+    requests: list[dict[str, Any]] = []
+    tasks: list[asyncio.Task] = []
+
+    for label in ("augmented", "rate_limit", "timeout", "queued_cancel"):
+        user_id, request_id = await _create_user_and_request()
+        requests.append(
+            {
+                "label": label,
+                "user_id": user_id,
+                "request_id": request_id,
+                "execution_token": await _claim(request_id),
+                "provider_calls": 0,
+            }
+        )
+
+    cancelled_request_id = next(
+        int(row["request_id"])
+        for row in requests
+        if row["label"] == "queued_cancel"
+    )
+
+    class ObservingEvents:
+        async def record(self, db, **event):
+            await actual_events.record(db, **event)
+            if (
+                event.get("request_id") == cancelled_request_id
+                and event.get("event_type") == "RERANK_QUEUED"
+            ):
+                cancelled_request_queued.set()
+
+    async def run_request(row: dict[str, Any]) -> dict[str, Any]:
+        label = str(row["label"])
+
+        async def fake_provider(_messages):
+            row["provider_calls"] = int(row["provider_calls"]) + 1
+            if label == "augmented":
+                first_provider_started.set()
+                await asyncio.sleep(0.03)
+                return _provider_success()
+            if label == "rate_limit":
+                await asyncio.sleep(0.03)
+                raise RuntimeError("429 controlled mixed-load rate limit")
+            if label == "timeout":
+                await asyncio.sleep(0.03)
+                return _provider_success()
+            raise AssertionError("queued cancellation must not call the provider")
+
+        timeout_seconds = 0.003 if label == "timeout" else 0.1
+        node = RecommendationGraphNodes(
+            rerank_service=RecommendationRerankService(
+                timeout_seconds=timeout_seconds,
+                llm_invoker=fake_provider,
+            ),
+            rerank_lane=lane,
+            execution_event_repository=ObservingEvents(),
+            request_repository=AiRequestRepository(),
+        )
+        started_at = time.perf_counter()
+        async with AsyncSessionLocal() as db:
+            state = await node.llm_rerank(
+                {
+                    "db": db,
+                    "request_id": int(row["request_id"]),
+                    "execution_token": str(row["execution_token"]),
+                    "merged_condition_json": {},
+                    "base_result_json": _base_result(),
+                    "result_json": _base_result(),
+                    "candidates": [],
+                    "assessments": [],
+                }
+            )
+            await db.commit()
+        result_json = dict(state["result_json"])
+        write_applied, terminal_status = await _persist_terminal(
+            request_id=int(row["request_id"]),
+            execution_token=str(row["execution_token"]),
+            result_json=result_json,
+        )
+        events = await _event_records(int(row["request_id"]))
+        summary = result_json.get("summary") or {}
+        return {
+            "label": label,
+            "request_id": row["request_id"],
+            "elapsed_ms": round((time.perf_counter() - started_at) * 1000, 3),
+            "terminal_status": terminal_status,
+            "durable_result_written": write_applied,
+            "provider_calls": row["provider_calls"],
+            "fallback_used": bool(summary.get("llm_fallback_used")),
+            "fallback_error": summary.get("llm_error"),
+            "skipped_due_to_cancellation": bool(
+                summary.get("llm_skipped_due_to_cancellation")
+            ),
+            "events": events,
+        }
+
+    try:
+        augmented = next(row for row in requests if row["label"] == "augmented")
+        augmented_task = asyncio.create_task(run_request(augmented))
+        tasks.append(augmented_task)
+        await first_provider_started.wait()
+        trailing_tasks = [
+            asyncio.create_task(run_request(row))
+            for row in requests
+            if row["label"] != "augmented"
+        ]
+        tasks.extend(trailing_tasks)
+        await cancelled_request_queued.wait()
+        await _cancel(cancelled_request_id)
+        rows = [await augmented_task, *await asyncio.gather(*trailing_tasks)]
+        queue_waits = [
+            float(event["details"].get("queue_wait_ms", 0))
+            for row in rows
+            for event in row["events"]
+            if event["event_type"] == "RERANK_ADMITTED"
+        ]
+        max_in_flight = max(
+            int(event["details"].get("max_in_flight", 0))
+            for row in rows
+            for event in row["events"]
+            if event["event_type"] == "RERANK_ADMITTED"
+        )
+        elapsed = [float(row["elapsed_ms"]) for row in rows]
+        return {
+            "capacity": capacity,
+            "arrival_pattern": (
+                "one delayed augmentation, then 429, timeout, and a request "
+                "cancelled after it enters the node's lane queue"
+            ),
+            "scope": "one process; actual rerank node and durable fence; fixed base result",
+            "summary": {
+                "offered": len(rows),
+                "admitted": len(queue_waits),
+                "max_in_flight": max_in_flight,
+                "queue_wait_p50_ms": round(statistics.median(queue_waits), 3),
+                "queue_wait_p95_ms": _percentile_ms(queue_waits, 0.95),
+                "completion_p50_ms": round(statistics.median(elapsed), 3),
+                "completion_p95_ms": _percentile_ms(elapsed, 0.95),
+                "augmented": sum(
+                    row["terminal_status"] == "COMPLETED"
+                    and not row["fallback_used"]
+                    for row in rows
+                ),
+                "fallback": sum(bool(row["fallback_used"]) for row in rows),
+                "cancelled": sum(row["terminal_status"] == "CANCELLED" for row in rows),
+                "timeout": sum(
+                    "TimeoutError" in str(row["fallback_error"] or "") for row in rows
+                ),
+                "rate_limit": sum(
+                    "429" in str(row["fallback_error"] or "") for row in rows
+                ),
+                "provider_calls": sum(int(row["provider_calls"]) for row in rows),
+                "queued_cancel_provider_calls": next(
+                    int(row["provider_calls"])
+                    for row in rows
+                    if row["label"] == "queued_cancel"
+                ),
+                "late_write_blocked": sum(
+                    any(
+                        event["event_type"] == "LATE_WRITE_BLOCKED"
+                        for event in row["events"]
+                    )
+                    for row in rows
+                ),
+            },
+            "rows": rows,
+        }
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        for row in requests:
+            await _cleanup(int(row["user_id"]))
+
+
 async def main(
     output_path: Path | None,
     lane_capacities: list[int],
@@ -534,13 +746,16 @@ async def main(
     rows = [await _run_scenario(scenario) for scenario in SCENARIOS]
     lane_probes = [await _run_lane_probe(capacity) for capacity in lane_capacities]
     durable_queued_cancellation_probe = await _run_durable_queued_cancellation_probe()
+    mixed_load_points = [
+        await _run_mixed_load_point(capacity) for capacity in lane_capacities
+    ]
     latencies = [float(row["elapsed_ms"]) for row in rows]
     result = {
         "experiment": "controlled_recommendation_rerank_fault_matrix",
         "scope": {
             "database": "isolated local PostgreSQL on 127.0.0.1:55432",
             "provider": "in-process controlled fake",
-            "concurrency_scope": "process-local lane probes only; no global limit",
+            "concurrency_scope": "process-local lane only; no global limit",
             "not_production_evidence": True,
         },
         "scenario_count": len(rows),
@@ -568,6 +783,7 @@ async def main(
         "rows": rows,
         "lane_probes": lane_probes,
         "durable_queued_cancellation_probe": durable_queued_cancellation_probe,
+        "mixed_load_points": mixed_load_points,
     }
     if output_path:
         output_path.parent.mkdir(parents=True, exist_ok=True)
