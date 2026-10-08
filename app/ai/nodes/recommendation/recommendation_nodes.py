@@ -1,10 +1,18 @@
 from app.ai.states.recommendation_state import RecommendationGraphState
 from app.ai.utils.progress import progress_node
 from app.repositories.policy_assessment_repository import PolicyAssessmentRepository
+from app.repositories.recommendation_execution_event_repository import (
+    RecommendationExecutionEventRepository,
+)
+from app.core.config import settings
 from app.services.recommendation_assessment_service import RecommendationAssessmentService
 from app.services.recommendation_candidate_service import RecommendationCandidateService
 from app.services.recommendation_rerank_service import RecommendationRerankService
 from app.services.recommendation_service import RecommendationService
+from app.services.recommendation_rerank_lane import (
+    ProcessLocalRerankLane,
+    get_process_local_rerank_lane,
+)
 
 
 class RecommendationGraphNodes:
@@ -15,6 +23,8 @@ class RecommendationGraphNodes:
         assessment_service: RecommendationAssessmentService | None = None,
         assessment_repository: PolicyAssessmentRepository | None = None,
         rerank_service: RecommendationRerankService | None = None,
+        rerank_lane: ProcessLocalRerankLane | None = None,
+        execution_event_repository: RecommendationExecutionEventRepository | None = None,
     ) -> None:
         self.candidate_service = candidate_service or RecommendationCandidateService()
         self.recommendation_service = recommendation_service or RecommendationService()
@@ -25,6 +35,14 @@ class RecommendationGraphNodes:
             assessment_repository or PolicyAssessmentRepository()
         )
         self.rerank_service = rerank_service or RecommendationRerankService()
+        self.rerank_lane = rerank_lane or (
+            get_process_local_rerank_lane(settings.recommendation_rerank_max_in_flight)
+            if settings.recommendation_rerank_max_in_flight is not None
+            else None
+        )
+        self.execution_event_repository = (
+            execution_event_repository or RecommendationExecutionEventRepository()
+        )
 
     @progress_node("recommendation", "candidate_search")
     async def candidate_search(
@@ -128,7 +146,53 @@ class RecommendationGraphNodes:
         self,
         state: RecommendationGraphState,
     ) -> RecommendationGraphState:
-        rerank_result = await self.rerank_service.rerank(
+        if self.rerank_lane is None:
+            rerank_result = await self._rerank(state)
+            return {
+                **state,
+                "llm_rerank_result": rerank_result,
+                "llm_fallback_used": rerank_result.fallback_used,
+                "llm_error": rerank_result.error,
+                "result_json": rerank_result.result_json,
+            }
+
+        await self._record_lane_event(state, "RERANK_QUEUED", "QUEUED")
+        async with self.rerank_lane.admit() as admission:
+            await self._record_lane_event(
+                state,
+                "RERANK_ADMITTED",
+                "ADMITTED",
+                {
+                    "capacity": admission.capacity,
+                    "queue_wait_ms": admission.queue_wait_ms,
+                    "in_flight": admission.in_flight,
+                    "max_in_flight": admission.max_in_flight,
+                },
+            )
+            rerank_result = await self._rerank(state)
+        await self._record_lane_event(
+            state,
+            "RERANK_RELEASED",
+            "RELEASED",
+            {
+                "capacity": self.rerank_lane.capacity,
+                "provider_call_count": rerank_result.provider_call_count,
+                "provider_token_usage_available": (
+                    rerank_result.provider_token_usage_available
+                ),
+                "fallback_used": rerank_result.fallback_used,
+            },
+        )
+        return {
+            **state,
+            "llm_rerank_result": rerank_result,
+            "llm_fallback_used": rerank_result.fallback_used,
+            "llm_error": rerank_result.error,
+            "result_json": rerank_result.result_json,
+        }
+
+    async def _rerank(self, state: RecommendationGraphState):
+        return await self.rerank_service.rerank(
             merged_condition_json=state["merged_condition_json"],
             candidates=state.get("candidates", []),
             assessments=state.get("assessments", []),
@@ -142,13 +206,23 @@ class RecommendationGraphNodes:
             input_issues=state.get("input_issues", []),
             profile_conflict_json=state.get("profile_conflict_json", []),
         )
-        return {
-            **state,
-            "llm_rerank_result": rerank_result,
-            "llm_fallback_used": rerank_result.fallback_used,
-            "llm_error": rerank_result.error,
-            "result_json": rerank_result.result_json,
-        }
+
+    async def _record_lane_event(
+        self,
+        state: RecommendationGraphState,
+        event_type: str,
+        outcome: str,
+        details: dict[str, object] | None = None,
+    ) -> None:
+        await self.execution_event_repository.record(
+            state["db"],
+            request_id=state["request_id"],
+            execution_token=state.get("execution_token"),
+            event_type=event_type,
+            stage="RERANK_LANE",
+            outcome=outcome,
+            details=details,
+        )
 
     @progress_node("recommendation", "rerank_save")
     async def rerank_save(

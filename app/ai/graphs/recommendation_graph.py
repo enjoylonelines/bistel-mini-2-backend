@@ -6,9 +6,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.ai.nodes.recommendation import RecommendationGraphNodes
 from app.ai.states import RecommendationGraphState
 from app.repositories.policy_assessment_repository import PolicyAssessmentRepository
+from app.repositories.recommendation_execution_event_repository import (
+    RecommendationExecutionEventRepository,
+)
 from app.services.recommendation_assessment_service import RecommendationAssessmentService
 from app.services.recommendation_candidate_service import RecommendationCandidateService
 from app.services.recommendation_rerank_service import RecommendationRerankService
+from app.services.recommendation_rerank_lane import ProcessLocalRerankLane
 from app.services.recommendation_service import RecommendationService
 
 
@@ -20,6 +24,8 @@ class RecommendationGraphRunner:
         assessment_service: RecommendationAssessmentService | None = None,
         assessment_repository: PolicyAssessmentRepository | None = None,
         rerank_service: RecommendationRerankService | None = None,
+        rerank_lane: ProcessLocalRerankLane | None = None,
+        execution_event_repository: RecommendationExecutionEventRepository | None = None,
     ) -> None:
         self.nodes = RecommendationGraphNodes(
             candidate_service=candidate_service,
@@ -27,6 +33,8 @@ class RecommendationGraphRunner:
             assessment_service=assessment_service,
             assessment_repository=assessment_repository,
             rerank_service=rerank_service,
+            rerank_lane=rerank_lane,
+            execution_event_repository=execution_event_repository,
         )
         self.graph = self._build_graph()
 
@@ -64,11 +72,13 @@ class RecommendationGraphRunner:
         selected_conditions: dict[str, Any] | None = None,
         follow_up_answers: list[dict[str, Any]] | None = None,
         follow_up_denials: list[dict[str, Any]] | None = None,
+        execution_token: str | None = None,
     ) -> dict[str, Any]:
         final_state = await self.graph.ainvoke(
             {
                 "db": db,
                 "request_id": request_id,
+                "execution_token": execution_token,
                 "merged_condition_json": merged_condition_json,
                 "input_issues": input_issues or [],
                 "profile_conflict_json": profile_conflict_json or [],

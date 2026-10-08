@@ -148,7 +148,15 @@ async def process_ai_condition_request(request_type: str, request_id: int) -> No
                             str(summary.get("llm_error") or "").split(":", 1)[0]
                             or None
                         ),
-                        details={"llm_fallback_used": fallback_used},
+                        details={
+                            "llm_fallback_used": fallback_used,
+                            "provider_call_count": int(
+                                summary.get("llm_provider_call_count") or 0
+                            ),
+                            "provider_token_usage_available": bool(
+                                summary.get("llm_provider_token_usage_available")
+                            ),
+                        },
                     )
                 await db.commit()
                 logger.info(
@@ -578,7 +586,15 @@ async def _recommendation_sse_stream(
                             str(summary.get("llm_error") or "").split(":", 1)[0]
                             or None
                         ),
-                        details={"llm_fallback_used": fallback_used},
+                        details={
+                            "llm_fallback_used": fallback_used,
+                            "provider_call_count": int(
+                                summary.get("llm_provider_call_count") or 0
+                            ),
+                            "provider_token_usage_available": bool(
+                                summary.get("llm_provider_token_usage_available")
+                            ),
+                        },
                     )
                     await inner_db.commit()
                     result = await service.get_recommendation_polling_result(

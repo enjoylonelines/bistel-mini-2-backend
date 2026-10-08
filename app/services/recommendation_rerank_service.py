@@ -38,6 +38,8 @@ class RecommendationRerankOutput:
     rerank_scores: dict[int, float]
     fallback_used: bool
     error: str | None = None
+    provider_call_count: int = 0
+    provider_token_usage_available: bool = False
 
 
 class RecommendationRerankService:
@@ -125,7 +127,9 @@ class RecommendationRerankService:
                 result_limit,
                 "LLM rerank candidate pool is empty",
             )
+        provider_call_count = 0
         try:
+            provider_call_count = 1
             llm_result = await self._call_llm(
                 merged_condition_json=merged_condition_json,
                 candidate_items=candidate_items,
@@ -142,11 +146,13 @@ class RecommendationRerankService:
                     base_result_json,
                     result_limit,
                     "LLM rerank returned no valid recommendations",
+                    provider_call_count=provider_call_count,
                 )
             return self._apply_llm_result(
                 base_result_json=base_result_json,
                 llm_result=sanitized,
                 result_limit=result_limit,
+                provider_call_count=provider_call_count,
             )
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"
@@ -156,7 +162,12 @@ class RecommendationRerankService:
                 exc,
                 exc_info=True,
             )
-            return self._fallback(base_result_json, result_limit, error)
+            return self._fallback(
+                base_result_json,
+                result_limit,
+                error,
+                provider_call_count=provider_call_count,
+            )
 
     async def _call_llm(
         self,
@@ -420,6 +431,7 @@ class RecommendationRerankService:
         base_result_json: dict[str, Any],
         llm_result: LlmRecommendationRerankResult,
         result_limit: int,
+        provider_call_count: int,
     ) -> RecommendationRerankOutput:
         result_json = copy.deepcopy(base_result_json)
         base_results = self._base_results(result_json)
@@ -510,6 +522,7 @@ class RecommendationRerankService:
                 base_result_json,
                 result_limit,
                 "LLM rerank result became empty after applying recommendations",
+                provider_call_count=provider_call_count,
             )
 
         llm_selected_count = len(final_results)
@@ -540,6 +553,8 @@ class RecommendationRerankService:
                 "llm_backfilled_count": llm_backfilled_count,
                 "llm_candidate_pool_count": len(base_results),
                 "priority_scoring_used": True,
+                "llm_provider_call_count": provider_call_count,
+                "llm_provider_token_usage_available": False,
             }
         )
         result_json["results"] = final_results
@@ -551,6 +566,7 @@ class RecommendationRerankService:
             rerank_scores=rerank_scores,
             fallback_used=False,
             error=None,
+            provider_call_count=provider_call_count,
         )
 
     def _demote_follow_up_denial_conflicts(
@@ -776,6 +792,7 @@ class RecommendationRerankService:
         base_result_json: dict[str, Any],
         result_limit: int,
         error: str,
+        provider_call_count: int = 0,
     ) -> RecommendationRerankOutput:
         result_json = copy.deepcopy(base_result_json)
         fallback_results = self._demote_follow_up_denial_conflicts(
@@ -795,6 +812,8 @@ class RecommendationRerankService:
                 "llm_fallback_used": True,
                 "llm_error": error,
                 "priority_scoring_used": True,
+                "llm_provider_call_count": provider_call_count,
+                "llm_provider_token_usage_available": False,
             }
         )
         result_json["results"] = fallback_results
@@ -806,6 +825,7 @@ class RecommendationRerankService:
             rerank_scores={},
             fallback_used=True,
             error=error,
+            provider_call_count=provider_call_count,
         )
 
     def _candidate_items(

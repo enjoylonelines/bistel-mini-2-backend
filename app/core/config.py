@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     jwt_secret_key: str
     jwt_algorithm: str
     access_token_expire_minutes: int
+    # None leaves the process-local rerank lane disabled. A value is an
+    # explicitly chosen per-process capacity, never a global limit.
+    recommendation_rerank_max_in_flight: int | None = None
 
     model_config = SettingsConfigDict(
         env_file=(".env.example", ".env"),

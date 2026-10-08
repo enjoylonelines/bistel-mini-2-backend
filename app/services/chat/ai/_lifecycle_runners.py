@@ -110,7 +110,15 @@ async def run_recommendation_lifecycle(
                         str(summary.get("llm_error") or "").split(":", 1)[0]
                         or None
                     ),
-                    details={"llm_fallback_used": fallback_used},
+                    details={
+                        "llm_fallback_used": fallback_used,
+                        "provider_call_count": int(
+                            summary.get("llm_provider_call_count") or 0
+                        ),
+                        "provider_token_usage_available": bool(
+                            summary.get("llm_provider_token_usage_available")
+                        ),
+                    },
                 )
                 await db.commit()
                 return snapshot, None

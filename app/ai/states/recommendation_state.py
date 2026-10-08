@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 class RecommendationGraphState(TypedDict):
     db: AsyncSession
     request_id: int
+    execution_token: NotRequired[str | None]
     merged_condition_json: dict[str, Any]
     raw_query: NotRequired[str | None]
     selected_conditions: NotRequired[dict[str, Any] | None]

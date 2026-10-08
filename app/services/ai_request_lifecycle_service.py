@@ -786,6 +786,7 @@ class AiRequestLifecycleService:
                 selected_conditions=selected_conditions,
                 follow_up_answers=follow_up_answers,
                 follow_up_denials=follow_up_denials,
+                execution_token=execution_token,
             )
             result_json = normalize_recommendation_result_json(result_json)
             # AI 판정 게이트: 아직 추가질문을 안 거쳤고, 최종 결과에 공통 부족정보가 있으면
