@@ -73,9 +73,18 @@ async def run_recommendation_lifecycle(
                     db=db,
                     request_id=request_id,
                 )
-                await db.commit()
                 if execution_token is None:
+                    await db.commit()
                     raise RequestExecutionOwnershipLost()
+                await lifecycle.record_recommendation_execution_event(
+                    db,
+                    request_id=request_id,
+                    event_type="EXECUTION_CLAIMED",
+                    stage="ADMISSION",
+                    execution_token=execution_token,
+                    outcome="CLAIMED",
+                )
+                await db.commit()
 
                 await db.execute(text(f"SET LOCAL lock_timeout = '{_RECOMMEND_LOCK_TIMEOUT}'"))
                 await db.execute(text(f"SET LOCAL statement_timeout = '{_RECOMMEND_STATEMENT_TIMEOUT}'"))
@@ -87,6 +96,21 @@ async def run_recommendation_lifecycle(
                         execution_token=execution_token,
                     ),
                     timeout=_RECOMMEND_LIFECYCLE_TIMEOUT_SECONDS,
+                )
+                summary = snapshot.result_json.get("summary") or {}
+                fallback_used = bool(summary.get("llm_fallback_used"))
+                await lifecycle.record_recommendation_execution_event(
+                    db,
+                    request_id=request_id,
+                    event_type="EXECUTION_TERMINAL",
+                    stage="RERANK",
+                    execution_token=execution_token,
+                    outcome="FALLBACK" if fallback_used else "AUGMENTED",
+                    error_type=(
+                        str(summary.get("llm_error") or "").split(":", 1)[0]
+                        or None
+                    ),
+                    details={"llm_fallback_used": fallback_used},
                 )
                 await db.commit()
                 return snapshot, None

@@ -81,6 +81,24 @@ class AiRequestRepository:
             "ALTER TABLE eligibility_request ADD COLUMN IF NOT EXISTS source_ref_id varchar(100)",
             "ALTER TABLE recommendation_request ALTER COLUMN raw_query DROP NOT NULL",
             "ALTER TABLE eligibility_request ALTER COLUMN raw_query DROP NOT NULL",
+            """
+            CREATE TABLE IF NOT EXISTS recommendation_execution_event (
+                event_id bigserial PRIMARY KEY,
+                request_id bigint NOT NULL
+                    REFERENCES recommendation_request(request_id) ON DELETE CASCADE,
+                execution_token varchar(36),
+                event_type varchar(50) NOT NULL,
+                stage varchar(50) NOT NULL,
+                outcome varchar(50),
+                error_type varchar(100),
+                details_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+                occurred_at timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS recommendation_execution_event_request_idx
+                ON recommendation_execution_event (request_id, event_id)
+            """,
         ]:
             await db.execute(text(statement))
 

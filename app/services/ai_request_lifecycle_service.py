@@ -25,6 +25,9 @@ from app.common.psycopg_pool_conf import psycopg_pool
 from app.db.models.policy import Policy
 from app.repositories.ai_request_repository import AiRequestModel, AiRequestRepository
 from app.repositories.family_profile_repository import FamilyProfileRepository
+from app.repositories.recommendation_execution_event_repository import (
+    RecommendationExecutionEventRepository,
+)
 from app.repositories.policy_assessment_repository import PolicyAssessmentRepository
 from app.repositories.user_repository import UserRepository
 from app.schemas.ai_contract import (
@@ -90,6 +93,7 @@ class AiRequestLifecycleService:
         eligibility_follow_up_question_agent: (
             EligibilityFollowUpQuestionAgent | None
         ) = None,
+        execution_event_repository: RecommendationExecutionEventRepository | None = None,
     ) -> None:
         self.repository = repository or AiRequestRepository()
         self.assessment_repository = assessment_repository or PolicyAssessmentRepository()
@@ -104,6 +108,9 @@ class AiRequestLifecycleService:
         )
         self.eligibility_follow_up_question_agent = (
             eligibility_follow_up_question_agent or EligibilityFollowUpQuestionAgent()
+        )
+        self.execution_event_repository = (
+            execution_event_repository or RecommendationExecutionEventRepository()
         )
 
     async def create_request(
@@ -161,12 +168,21 @@ class AiRequestLifecycleService:
         request_type: str,
         request_id: int,
     ) -> AiRequestSnapshot:
-        return await self._set_status(
+        snapshot = await self._set_status(
             db,
             request_type,
             request_id,
             RequestStatus.PROCESSING,
         )
+        if request_type == "recommendation":
+            await self.record_recommendation_execution_event(
+                db,
+                request_id=request_id,
+                event_type="REQUEST_OFFERED",
+                stage="ADMISSION",
+                outcome="PROCESSING",
+            )
+        return snapshot
 
     async def mark_completed(
         self,
@@ -418,6 +434,29 @@ class AiRequestLifecycleService:
         request_id: int,
     ) -> str | None:
         return await self.repository.claim_recommendation_execution(db, request_id)
+
+    async def record_recommendation_execution_event(
+        self,
+        db: AsyncSession,
+        *,
+        request_id: int,
+        event_type: str,
+        stage: str,
+        execution_token: str | None = None,
+        outcome: str | None = None,
+        error_type: str | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        await self.execution_event_repository.record(
+            db,
+            request_id=request_id,
+            event_type=event_type,
+            stage=stage,
+            execution_token=execution_token,
+            outcome=outcome,
+            error_type=error_type,
+            details=details,
+        )
 
     async def cancel_recommendation_request(
         self,

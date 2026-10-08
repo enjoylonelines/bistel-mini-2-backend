@@ -103,20 +103,29 @@ async def process_ai_condition_request(request_type: str, request_id: int) -> No
                         db=db,
                         request_id=request_id,
                     )
-                    # Claiming must be committed before any slow/external work.
-                    # Otherwise a competing task can be blocked by this row lock.
-                    await db.commit()
                     if execution_token is None:
+                        await db.commit()
                         logger.info(
                             "AI background task skipped without execution claim: request_id=%s",
                             request_id,
                         )
                         return
+                    await service.record_recommendation_execution_event(
+                        db,
+                        request_id=request_id,
+                        event_type="EXECUTION_CLAIMED",
+                        stage="ADMISSION",
+                        execution_token=execution_token,
+                        outcome="CLAIMED",
+                    )
+                    # Commit the claim and its observation before any slow or
+                    # external work; a competing task must not wait on this lock.
+                    await db.commit()
                     # SET LOCAL is transaction-scoped, so restore the DB
                     # safeguards after committing the short ownership claim.
                     await db.execute(text("SET LOCAL lock_timeout = '5s'"))
                     await db.execute(text("SET LOCAL statement_timeout = '60s'"))
-                await asyncio.wait_for(
+                snapshot = await asyncio.wait_for(
                     service.process_condition_request(
                         db=db,
                         request_type=request_type,
@@ -125,6 +134,22 @@ async def process_ai_condition_request(request_type: str, request_id: int) -> No
                     ),
                     timeout=AI_BACKGROUND_TIMEOUT_SECONDS,
                 )
+                if request_type == "recommendation":
+                    summary = snapshot.result_json.get("summary") or {}
+                    fallback_used = bool(summary.get("llm_fallback_used"))
+                    await service.record_recommendation_execution_event(
+                        db,
+                        request_id=request_id,
+                        event_type="EXECUTION_TERMINAL",
+                        stage="RERANK",
+                        execution_token=execution_token,
+                        outcome="FALLBACK" if fallback_used else "AUGMENTED",
+                        error_type=(
+                            str(summary.get("llm_error") or "").split(":", 1)[0]
+                            or None
+                        ),
+                        details={"llm_fallback_used": fallback_used},
+                    )
                 await db.commit()
                 logger.info(
                     "AI background task completed: request_type=%s request_id=%s",
@@ -138,6 +163,14 @@ async def process_ai_condition_request(request_type: str, request_id: int) -> No
                     request_type,
                     request_id,
                 )
+                if request_type == "recommendation":
+                    await _record_recommendation_execution_event(
+                        request_id=request_id,
+                        execution_token=execution_token,
+                        event_type="LATE_WRITE_BLOCKED",
+                        stage="TERMINAL",
+                        outcome="DROPPED",
+                    )
                 return
             except Exception:
                 await db.rollback()
@@ -177,13 +210,23 @@ async def _mark_ai_request_failed(
     async with AsyncSessionLocal() as db:
         service = AiRequestLifecycleService()
         try:
-            await service.mark_failed(
+            snapshot = await service.mark_failed(
                 db=db,
                 request_type=request_type,
                 request_id=request_id,
                 error_message=error_message,
                 execution_token=execution_token,
             )
+            if request_type == "recommendation":
+                await service.record_recommendation_execution_event(
+                    db,
+                    request_id=request_id,
+                    event_type="EXECUTION_TERMINAL",
+                    stage="REQUEST",
+                    execution_token=execution_token,
+                    outcome="FAILED",
+                    error_type="BACKGROUND_FAILURE",
+                )
             await db.commit()
         except Exception:
             await db.rollback()
@@ -191,6 +234,36 @@ async def _mark_ai_request_failed(
                 "Failed to mark AI request as failed: request_type=%s request_id=%s",
                 request_type,
                 request_id,
+            )
+
+
+async def _record_recommendation_execution_event(
+    *,
+    request_id: int,
+    execution_token: str | None,
+    event_type: str,
+    stage: str,
+    outcome: str,
+) -> None:
+    """Record a post-rollback fact without reviving a cancelled request."""
+    async with AsyncSessionLocal() as db:
+        service = AiRequestLifecycleService()
+        try:
+            await service.record_recommendation_execution_event(
+                db,
+                request_id=request_id,
+                execution_token=execution_token,
+                event_type=event_type,
+                stage=stage,
+                outcome=outcome,
+            )
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            logger.exception(
+                "Failed to record recommendation execution event: request_id=%s event=%s",
+                request_id,
+                event_type,
             )
 
 
@@ -303,6 +376,13 @@ async def cancel_recommendation_request(
         db=db,
         request_id=request_id,
         user_id=current_user.user_id,
+    )
+    await service.record_recommendation_execution_event(
+        db,
+        request_id=request_id,
+        event_type="REQUEST_CANCELLED",
+        stage="TERMINAL",
+        outcome="CANCELLED",
     )
     await db.commit()
     return success_response(data=snapshot, meta=_request_meta(snapshot))
@@ -464,10 +544,19 @@ async def _recommendation_sse_stream(
                         db=inner_db,
                         request_id=int(snapshot.request_id),
                     )
-                    await inner_db.commit()
                     if execution_token is None:
+                        await inner_db.commit()
                         raise RequestExecutionOwnershipLost()
-                    await asyncio.wait_for(
+                    await service.record_recommendation_execution_event(
+                        inner_db,
+                        request_id=int(snapshot.request_id),
+                        event_type="EXECUTION_CLAIMED",
+                        stage="ADMISSION",
+                        execution_token=execution_token,
+                        outcome="CLAIMED",
+                    )
+                    await inner_db.commit()
+                    completed = await asyncio.wait_for(
                         service.process_condition_request(
                             db=inner_db,
                             request_type="recommendation",
@@ -475,6 +564,21 @@ async def _recommendation_sse_stream(
                             execution_token=execution_token,
                         ),
                         timeout=AI_BACKGROUND_TIMEOUT_SECONDS,
+                    )
+                    summary = completed.result_json.get("summary") or {}
+                    fallback_used = bool(summary.get("llm_fallback_used"))
+                    await service.record_recommendation_execution_event(
+                        inner_db,
+                        request_id=int(snapshot.request_id),
+                        event_type="EXECUTION_TERMINAL",
+                        stage="RERANK",
+                        execution_token=execution_token,
+                        outcome="FALLBACK" if fallback_used else "AUGMENTED",
+                        error_type=(
+                            str(summary.get("llm_error") or "").split(":", 1)[0]
+                            or None
+                        ),
+                        details={"llm_fallback_used": fallback_used},
                     )
                     await inner_db.commit()
                     result = await service.get_recommendation_polling_result(
