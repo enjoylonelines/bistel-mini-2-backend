@@ -59,10 +59,15 @@ def test_lane_emits_queue_admit_and_release_events() -> None:
         async def record(self, db, **event):
             events.append(event)
 
+    class ActiveRequestRepository:
+        async def has_active_recommendation_execution(self, db, request_id, execution_token):
+            return True
+
     nodes = RecommendationGraphNodes(
         rerank_service=FakeRerankService(),
         rerank_lane=ProcessLocalRerankLane(capacity=1),
         execution_event_repository=FakeEventRepository(),
+        request_repository=ActiveRequestRepository(),
     )
 
     result = asyncio.run(
@@ -89,3 +94,51 @@ def test_lane_emits_queue_admit_and_release_events() -> None:
     assert details["queue_wait_ms"] >= 0
     assert details["in_flight"] == 1
     assert details["max_in_flight"] == 1
+
+
+def test_lane_drops_cancelled_request_before_provider_call() -> None:
+    events: list[dict[str, object]] = []
+
+    class FakeRerankService:
+        calls = 0
+
+        async def rerank(self, **kwargs):
+            self.calls += 1
+            raise AssertionError("cancelled request must not call the provider")
+
+    class FakeEventRepository:
+        async def record(self, db, **event):
+            events.append(event)
+
+    class CancelledRequestRepository:
+        async def has_active_recommendation_execution(self, db, request_id, execution_token):
+            return False
+
+    rerank_service = FakeRerankService()
+    nodes = RecommendationGraphNodes(
+        rerank_service=rerank_service,
+        rerank_lane=ProcessLocalRerankLane(capacity=1),
+        execution_event_repository=FakeEventRepository(),
+        request_repository=CancelledRequestRepository(),
+    )
+
+    result = asyncio.run(
+        nodes.llm_rerank(
+            {
+                "db": SimpleNamespace(),
+                "request_id": 19,
+                "execution_token": "cancelled-owner",
+                "merged_condition_json": {},
+                "base_result_json": {"results": [], "summary": {}},
+            }
+        )
+    )
+
+    assert rerank_service.calls == 0
+    assert result["llm_rerank_result"] is None
+    assert result["result_json"]["summary"]["llm_skipped_due_to_cancellation"] is True
+    assert [event["event_type"] for event in events] == [
+        "RERANK_QUEUED",
+        "RERANK_ADMITTED",
+        "RERANK_DROPPED",
+    ]

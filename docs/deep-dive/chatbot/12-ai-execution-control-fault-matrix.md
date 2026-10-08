@@ -18,6 +18,11 @@ claim, runs exactly one fake-provider call, reads the durable event sequence,
 and deletes its test-only user/request afterward. The policy corpus and any real
 provider credential are not used.
 
-The harness intentionally runs one request at a time. It does not measure or
-claim admission queue behavior, global concurrency, multi-worker coordination,
-or a recommended concurrency value.
+The harness also has one two-request, capacity-one durable probe: it admits the
+first request, cancels the second while that request waits in the process-local
+lane, and verifies `RERANK_DROPPED` with zero provider calls. It distinguishes
+that case from the single-request in-flight cancellation row, which has one
+already-started fake-provider call and a blocked late write.
+
+Neither slice measures or claims global concurrency, multi-worker coordination,
+provider capacity, a cost saving, or a recommended concurrency value.

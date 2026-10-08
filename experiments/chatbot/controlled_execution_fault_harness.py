@@ -224,6 +224,11 @@ async def _persist_terminal(
 ) -> tuple[bool, str]:
     repository = AiRequestRepository()
     events = RecommendationExecutionEventRepository()
+    summary = result_json.get("summary") or {}
+    provider_call_count = int(summary.get("llm_provider_call_count") or 0)
+    provider_token_usage_available = bool(
+        summary.get("llm_provider_token_usage_available")
+    )
     async with AsyncSessionLocal() as db:
         request = await repository.find_by_id(db, "recommendation", request_id)
         if request is None:
@@ -242,6 +247,10 @@ async def _persist_terminal(
                 event_type="LATE_WRITE_BLOCKED",
                 stage="TERMINAL",
                 outcome="DROPPED",
+                details={
+                    "provider_call_count": provider_call_count,
+                    "provider_token_usage_available": provider_token_usage_available,
+                },
             )
             await db.commit()
             return False, RequestStatus.CANCELLED.value
@@ -254,7 +263,6 @@ async def _persist_terminal(
         )
         if terminal is None:
             raise RuntimeError("terminal status fence unexpectedly lost after result write")
-        summary = result_json.get("summary") or {}
         fallback_used = bool(summary.get("llm_fallback_used"))
         await events.record(
             db,
@@ -266,7 +274,11 @@ async def _persist_terminal(
             error_type=(
                 str(summary.get("llm_error") or "").split(":", 1)[0] or None
             ),
-            details={"llm_fallback_used": fallback_used},
+            details={
+                "llm_fallback_used": fallback_used,
+                "provider_call_count": provider_call_count,
+                "provider_token_usage_available": provider_token_usage_available,
+            },
         )
         await db.commit()
         return True, RequestStatus.COMPLETED.value
@@ -399,12 +411,129 @@ async def _run_lane_probe(capacity: int) -> dict[str, Any]:
     }
 
 
+async def _run_durable_queued_cancellation_probe() -> dict[str, Any]:
+    """Cancel a claimed request while it waits behind another durable request.
+
+    This is deliberately a two-request, capacity-one experiment.  It checks
+    the same durable ownership fence used by the graph node immediately after
+    lane admission and before the provider call.  It does not claim a global
+    queue or distributed coordination.
+    """
+    first_user_id, first_request_id = await _create_user_and_request()
+    queued_user_id, queued_request_id = await _create_user_and_request()
+    lane = ProcessLocalRerankLane(capacity=1)
+    first_provider_started = asyncio.Event()
+    queued_lane_requested = asyncio.Event()
+    calls = {"first": 0, "queued_cancel": 0}
+
+    async def execute(
+        *,
+        label: str,
+        request_id: int,
+        execution_token: str,
+    ) -> dict[str, Any]:
+        async def fake_provider(_messages):
+            calls[label] += 1
+            if label == "first":
+                first_provider_started.set()
+            await asyncio.sleep(0.03)
+            return _provider_success()
+
+        if label == "queued_cancel":
+            queued_lane_requested.set()
+        async with lane.admit() as admission:
+            repository = AiRequestRepository()
+            async with AsyncSessionLocal() as db:
+                active = await repository.has_active_recommendation_execution(
+                    db, request_id, execution_token
+                )
+            if not active:
+                async with AsyncSessionLocal() as db:
+                    await RecommendationExecutionEventRepository().record(
+                        db,
+                        request_id=request_id,
+                        execution_token=execution_token,
+                        event_type="RERANK_DROPPED",
+                        stage="RERANK_LANE",
+                        outcome="CANCELLED_BEFORE_PROVIDER_CALL",
+                        details={"provider_call_count": 0},
+                    )
+                    await db.commit()
+                return {
+                    "terminal_status": RequestStatus.CANCELLED.value,
+                    "durable_result_written": False,
+                    "provider_calls": calls[label],
+                    "queue_wait_ms": admission.queue_wait_ms,
+                    "dropped_before_provider_call": True,
+                }
+
+            rerank_output = await RecommendationRerankService(
+                timeout_seconds=0.1,
+                llm_invoker=fake_provider,
+            ).rerank(
+                merged_condition_json={},
+                candidates=[],
+                assessments=[],
+                base_result_json=_base_result(),
+                result_limit=1,
+            )
+            write_applied, terminal_status = await _persist_terminal(
+                request_id=request_id,
+                execution_token=execution_token,
+                result_json=rerank_output.result_json,
+            )
+            return {
+                "terminal_status": terminal_status,
+                "durable_result_written": write_applied,
+                "provider_calls": calls[label],
+                "queue_wait_ms": admission.queue_wait_ms,
+                "dropped_before_provider_call": False,
+            }
+
+    try:
+        first_token = await _claim(first_request_id)
+        queued_token = await _claim(queued_request_id)
+        first_task = asyncio.create_task(
+            execute(
+                label="first",
+                request_id=first_request_id,
+                execution_token=first_token,
+            )
+        )
+        await first_provider_started.wait()
+        queued_task = asyncio.create_task(
+            execute(
+                label="queued_cancel",
+                request_id=queued_request_id,
+                execution_token=queued_token,
+            )
+        )
+        await queued_lane_requested.wait()
+        await _cancel(queued_request_id)
+        first, queued_cancel = await asyncio.gather(first_task, queued_task)
+        first["events"] = await _event_types(first_request_id)
+        queued_cancel["events"] = await _event_types(queued_request_id)
+        return {
+            "capacity": 1,
+            "arrival_pattern": (
+                "first durable request admitted; second claimed request cancelled "
+                "while waiting in the same process-local lane"
+            ),
+            "first": first,
+            "queued_cancel": queued_cancel,
+        }
+    finally:
+        await _cleanup(first_user_id)
+        await _cleanup(queued_user_id)
+
+
 async def main(
     output_path: Path | None,
     lane_capacities: list[int],
 ) -> dict[str, Any]:
     rows = [await _run_scenario(scenario) for scenario in SCENARIOS]
     lane_probes = [await _run_lane_probe(capacity) for capacity in lane_capacities]
+    durable_queued_cancellation_probe = await _run_durable_queued_cancellation_probe()
     latencies = [float(row["elapsed_ms"]) for row in rows]
     result = {
         "experiment": "controlled_recommendation_rerank_fault_matrix",
@@ -425,11 +554,20 @@ async def main(
             "cancelled": sum(row["terminal_status"] == "CANCELLED" for row in rows),
             "late_write_blocked": sum(bool(row["late_write_blocked"]) for row in rows),
             "provider_calls": sum(int(row["provider_calls"]) for row in rows),
+            "in_flight_cancel_provider_calls": next(
+                int(row["provider_calls"])
+                for row in rows
+                if row["scenario"] == "cancel_before_completion"
+            ),
+            "queued_cancel_provider_calls": int(
+                durable_queued_cancellation_probe["queued_cancel"]["provider_calls"]
+            ),
             "elapsed_p50_ms": round(statistics.median(latencies), 3),
             "elapsed_p95_ms": _percentile_ms(latencies, 0.95),
         },
         "rows": rows,
         "lane_probes": lane_probes,
+        "durable_queued_cancellation_probe": durable_queued_cancellation_probe,
     }
     if output_path:
         output_path.parent.mkdir(parents=True, exist_ok=True)

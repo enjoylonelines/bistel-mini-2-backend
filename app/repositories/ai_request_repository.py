@@ -301,6 +301,33 @@ class AiRequestRepository:
         )
         return result.scalar_one_or_none()
 
+    async def has_active_recommendation_execution(
+        self,
+        db: AsyncSession,
+        request_id: int,
+        execution_token: str | None,
+    ) -> bool:
+        """Read the durable fence without relying on an ORM identity-map copy."""
+        if execution_token is None:
+            return False
+        result = await db.execute(
+            text(
+                """
+                SELECT 1
+                FROM recommendation_request
+                WHERE request_id = :request_id
+                  AND request_status = :processing
+                  AND execution_token = :execution_token
+                """
+            ),
+            {
+                "request_id": request_id,
+                "processing": RequestStatus.PROCESSING.value,
+                "execution_token": execution_token,
+            },
+        )
+        return result.scalar_one_or_none() is not None
+
     def _model_for(self, request_type: str):
         try:
             return self.REQUEST_MODELS[request_type]

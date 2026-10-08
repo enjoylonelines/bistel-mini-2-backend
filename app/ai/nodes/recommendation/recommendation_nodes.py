@@ -1,6 +1,7 @@
 from app.ai.states.recommendation_state import RecommendationGraphState
 from app.ai.utils.progress import progress_node
 from app.repositories.policy_assessment_repository import PolicyAssessmentRepository
+from app.repositories.ai_request_repository import AiRequestRepository
 from app.repositories.recommendation_execution_event_repository import (
     RecommendationExecutionEventRepository,
 )
@@ -25,6 +26,7 @@ class RecommendationGraphNodes:
         rerank_service: RecommendationRerankService | None = None,
         rerank_lane: ProcessLocalRerankLane | None = None,
         execution_event_repository: RecommendationExecutionEventRepository | None = None,
+        request_repository: AiRequestRepository | None = None,
     ) -> None:
         self.candidate_service = candidate_service or RecommendationCandidateService()
         self.recommendation_service = recommendation_service or RecommendationService()
@@ -43,6 +45,7 @@ class RecommendationGraphNodes:
         self.execution_event_repository = (
             execution_event_repository or RecommendationExecutionEventRepository()
         )
+        self.request_repository = request_repository or AiRequestRepository()
 
     @progress_node("recommendation", "candidate_search")
     async def candidate_search(
@@ -169,6 +172,18 @@ class RecommendationGraphNodes:
                     "max_in_flight": admission.max_in_flight,
                 },
             )
+            if not await self.request_repository.has_active_recommendation_execution(
+                state["db"],
+                state["request_id"],
+                state.get("execution_token"),
+            ):
+                await self._record_lane_event(
+                    state,
+                    "RERANK_DROPPED",
+                    "CANCELLED_BEFORE_PROVIDER_CALL",
+                    {"provider_call_count": 0},
+                )
+                return self._cancelled_before_rerank(state)
             rerank_result = await self._rerank(state)
         await self._record_lane_event(
             state,
@@ -223,6 +238,31 @@ class RecommendationGraphNodes:
             outcome=outcome,
             details=details,
         )
+
+    def _cancelled_before_rerank(
+        self,
+        state: RecommendationGraphState,
+    ) -> RecommendationGraphState:
+        result_json = dict(state.get("base_result_json") or state.get("result_json") or {})
+        summary = dict(result_json.get("summary") or {})
+        summary.update(
+            {
+                "llm_rerank_used": False,
+                "llm_fallback_used": False,
+                "llm_error": None,
+                "llm_provider_call_count": 0,
+                "llm_provider_token_usage_available": False,
+                "llm_skipped_due_to_cancellation": True,
+            }
+        )
+        result_json["summary"] = summary
+        return {
+            **state,
+            "llm_rerank_result": None,
+            "llm_fallback_used": False,
+            "llm_error": None,
+            "result_json": result_json,
+        }
 
     @progress_node("recommendation", "rerank_save")
     async def rerank_save(
