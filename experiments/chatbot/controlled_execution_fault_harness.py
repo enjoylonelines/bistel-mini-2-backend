@@ -48,6 +48,7 @@ from app.schemas.recommendation_rerank_schema import (
     LlmRecommendationRerankResult,
 )
 from app.services.recommendation_rerank_service import RecommendationRerankService
+from app.services.recommendation_rerank_lane import ProcessLocalRerankLane
 
 
 ScenarioKind = Literal[
@@ -357,15 +358,60 @@ async def _run_scenario(scenario: Scenario) -> dict[str, Any]:
         await _cleanup(user_id)
 
 
-async def main(output_path: Path | None) -> dict[str, Any]:
+async def _run_lane_probe(capacity: int) -> dict[str, Any]:
+    """Force overlapping fake work through one process-local lane.
+
+    This probe deliberately has no durable recommendation write. Durable
+    transitions are covered by the fault rows above; this narrow slice measures
+    the in-process semaphore's queueing behavior only.
+    """
+    lane = ProcessLocalRerankLane(capacity=capacity)
+    start = asyncio.Event()
+    arrivals = 0
+
+    async def worker(name: str) -> dict[str, Any]:
+        nonlocal arrivals
+        arrivals += 1
+        if arrivals == 2:
+            start.set()
+        await start.wait()
+        async with lane.admit() as admission:
+            await asyncio.sleep(0.02)
+            return {
+                "worker": name,
+                "queue_wait_ms": admission.queue_wait_ms,
+                "in_flight": admission.in_flight,
+                "max_in_flight": admission.max_in_flight,
+            }
+
+    rows = await asyncio.gather(worker("a"), worker("b"))
+    return {
+        "capacity": capacity,
+        "arrival_pattern": "two simultaneous in-process fake-provider tasks",
+        "rows": rows,
+        "max_in_flight": max(int(row["max_in_flight"]) for row in rows),
+        "queue_wait_p50_ms": round(
+            statistics.median(float(row["queue_wait_ms"]) for row in rows), 3
+        ),
+        "queue_wait_p95_ms": _percentile_ms(
+            [float(row["queue_wait_ms"]) for row in rows], 0.95
+        ),
+    }
+
+
+async def main(
+    output_path: Path | None,
+    lane_capacities: list[int],
+) -> dict[str, Any]:
     rows = [await _run_scenario(scenario) for scenario in SCENARIOS]
+    lane_probes = [await _run_lane_probe(capacity) for capacity in lane_capacities]
     latencies = [float(row["elapsed_ms"]) for row in rows]
     result = {
         "experiment": "controlled_recommendation_rerank_fault_matrix",
         "scope": {
             "database": "isolated local PostgreSQL on 127.0.0.1:55432",
             "provider": "in-process controlled fake",
-            "concurrency_scope": "no admission limit tested",
+            "concurrency_scope": "process-local lane probes only; no global limit",
             "not_production_evidence": True,
         },
         "scenario_count": len(rows),
@@ -383,6 +429,7 @@ async def main(output_path: Path | None) -> dict[str, Any]:
             "elapsed_p95_ms": _percentile_ms(latencies, 0.95),
         },
         "rows": rows,
+        "lane_probes": lane_probes,
     }
     if output_path:
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -393,5 +440,14 @@ async def main(output_path: Path | None) -> dict[str, Any]:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--lane-capacities", type=int, nargs="+", default=[1, 2])
     args = parser.parse_args()
-    print(json.dumps(asyncio.run(main(args.output)), ensure_ascii=False, indent=2))
+    if any(capacity < 1 for capacity in args.lane_capacities):
+        parser.error("--lane-capacities values must be positive")
+    print(
+        json.dumps(
+            asyncio.run(main(args.output, args.lane_capacities)),
+            ensure_ascii=False,
+            indent=2,
+        )
+    )

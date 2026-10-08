@@ -33,6 +33,21 @@ target, a capacity result, or a recommended concurrency setting.
 - The event sequence is queryable during execution before test-only rows are
   cleaned up.
 
+## Process-local lane probe
+
+The same isolated run also released two simultaneous in-process fake-provider
+tasks through a shared lane. Capacity was an experiment variable only.
+
+| Per-process capacity | Observed peak in-flight | Queue wait p50 | Queue wait p95 |
+| --- | ---: | ---: | ---: |
+| 1 | 1 | 10.539 ms | 21.074 ms |
+| 2 | 2 | 0.002 ms | 0.002 ms |
+
+This demonstrates the process-local semaphore's expected control flow under a
+two-task synthetic overlap. It does not compare production throughput, provider
+429 behavior, cost, or multi-worker/global capacity, and does not select an
+operator value for `RECOMMENDATION_RERANK_MAX_IN_FLIGHT`.
+
 ## What remains unmeasured
 
 - bounded admission, queue wait, in-flight overlap, and multi-worker/global
