@@ -627,6 +627,7 @@ class RecommendationRerankService:
                 "llm_candidate_pool_count": len(base_results),
                 "priority_scoring_used": True,
                 "llm_provider_call_count": provider_call_count,
+                "llm_model": self.model,
                 "llm_provider_token_usage_available": provider_token_usage is not None,
                 "llm_provider_token_usage": provider_token_usage,
             }
@@ -890,6 +891,7 @@ class RecommendationRerankService:
                 "llm_error": error,
                 "priority_scoring_used": True,
                 "llm_provider_call_count": provider_call_count,
+                "llm_model": self.model,
                 "llm_provider_token_usage_available": provider_token_usage is not None,
                 "llm_provider_token_usage": provider_token_usage,
             }

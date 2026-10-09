@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import time
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -28,6 +29,9 @@ from app.services.ai_request_lifecycle_service import (
     RequestExecutionOwnershipLost,
 )
 from app.services.chat.chat_service import ChatService
+from app.services.recommendation_langfuse_telemetry import (
+    recommendation_langfuse_telemetry,
+)
 
 
 # AI 단계(파싱·판정·리랭크)가 충분히 생각할 수 있도록 넉넉하게 둔다.
@@ -88,6 +92,7 @@ def _eligibility_source_ref(
 async def process_ai_condition_request(request_type: str, request_id: int) -> None:
     service = AiRequestLifecycleService()
     execution_token: str | None = None
+    execution_started_at = time.perf_counter()
     try:
         async with AsyncSessionLocal() as db:
             try:
@@ -159,6 +164,12 @@ async def process_ai_condition_request(request_type: str, request_id: int) -> No
                         },
                     )
                 await db.commit()
+                if request_type == "recommendation":
+                    recommendation_langfuse_telemetry.emit_completed(
+                        request_id=request_id,
+                        summary=summary,
+                        elapsed_ms=(time.perf_counter() - execution_started_at) * 1000,
+                    )
                 logger.info(
                     "AI background task completed: request_type=%s request_id=%s",
                     request_type,
@@ -529,6 +540,7 @@ async def _recommendation_sse_stream(
 
     async def _run() -> None:
         service = AiRequestLifecycleService()
+        execution_started_at = time.perf_counter()
         progress_token = set_progress_callback(_on_progress)
         try:
             async with AsyncSessionLocal() as inner_db:
@@ -597,6 +609,11 @@ async def _recommendation_sse_stream(
                         },
                     )
                     await inner_db.commit()
+                    recommendation_langfuse_telemetry.emit_completed(
+                        request_id=int(snapshot.request_id),
+                        summary=summary,
+                        elapsed_ms=(time.perf_counter() - execution_started_at) * 1000,
+                    )
                     result = await service.get_recommendation_polling_result(
                         db=inner_db,
                         request_id=int(snapshot.request_id),

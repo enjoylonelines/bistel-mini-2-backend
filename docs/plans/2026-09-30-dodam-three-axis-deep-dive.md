@@ -1255,3 +1255,14 @@ run-level synthetic call-count score를 확인했다. 이는 experiment observab
 `docs/deep-dive/chatbot/17-execution-dataset-experiment.md`의 v1 결과는
 post-cancel starts 94 → 0, fake-search starts 112 → 18(-83.929%)를 기록한다.
 이는 versioned local fake-search dataset에 한정된 control-flow claim이다.
+
+## 21. Opt-in application execution telemetry
+
+Langfuse experiment trace와 실제 추천 lifecycle trace는 구분한다. application
+telemetry는 기본 off이며, durable result commit 뒤에만 root execution span과 RAG
+retriever/rerank generation observation을 남긴다. raw query/profile/policy/evidence
+text/result prose는 금지하고, execution metadata, lane queue wait/in-flight,
+started/avoided call, fallback/error category 및 provider-reported token usage만
+허용한다. controlled fake-provider receipt trace는 schema/redaction 확인일 뿐,
+production traffic·latency·cost·capacity 증거가 아니다. 자세한 경계와 실행 방법은
+`docs/deep-dive/chatbot/18-langfuse-recommendation-telemetry.md`에 기록한다.

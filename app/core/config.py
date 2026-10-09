@@ -15,6 +15,9 @@ class Settings(BaseSettings):
     langfuse_public_key: str | None = None
     langfuse_secret_key: str | None = None
     langfuse_base_url: str | None = None
+    # Application request traces require a separate opt-in from offline
+    # experiment exports because they may contain operational metadata.
+    langfuse_recommendation_tracing_enabled: bool = False
     jwt_secret_key: str
     jwt_algorithm: str
     access_token_expire_minutes: int

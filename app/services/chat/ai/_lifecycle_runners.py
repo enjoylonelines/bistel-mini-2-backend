@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any
 
 from sqlalchemy import text
@@ -34,6 +35,9 @@ from app.services.chat.ai._graph_clients import (
     get_lifecycle_service,
 )
 from app.services.ai_request_lifecycle_service import RequestExecutionOwnershipLost
+from app.services.recommendation_langfuse_telemetry import (
+    recommendation_langfuse_telemetry,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +50,7 @@ async def run_recommendation_lifecycle(
 ) -> tuple[AiRequestSnapshot | None, str | None]:
     request_id: int | None = None
     execution_token: str | None = None
+    execution_started_at = time.perf_counter()
     try:
         async with AsyncSessionLocal() as db:
             try:
@@ -121,6 +126,11 @@ async def run_recommendation_lifecycle(
                     },
                 )
                 await db.commit()
+                recommendation_langfuse_telemetry.emit_completed(
+                    request_id=request_id,
+                    summary=summary,
+                    elapsed_ms=(time.perf_counter() - execution_started_at) * 1000,
+                )
                 return snapshot, None
             except Exception:
                 await db.rollback()
