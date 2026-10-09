@@ -2,7 +2,7 @@ import re
 from collections.abc import Sequence
 
 from app.schemas.ai_contract import EvidenceChunk
-from app.schemas.policy_rag_schema import PolicyRagSearchResult
+from app.schemas.policy_rag_schema import PolicyRagSearchResponse, PolicyRagSearchResult
 from app.services.policy_rag_service import PolicyRagService
 
 _RAW_STRUCTURED_RE = re.compile(
@@ -102,6 +102,7 @@ async def search_policy_chunks(
 
     allowed_policy_ids = {str(policy_id) for policy_id in policy_ids or []}
     chunks: list[EvidenceChunk] = []
+    audited_results: list[PolicyRagSearchResult] = []
     for result in selected_results:
         if result.chunk_id is None or result.policy_id is None:
             continue
@@ -114,6 +115,7 @@ async def search_policy_chunks(
         if allowed_policy_ids and not (policy_keys & allowed_policy_ids):
             continue
 
+        audited_results.append(result)
         chunks.append(
             EvidenceChunk(
                 chunk_id=result.chunk_id,
@@ -130,6 +132,16 @@ async def search_policy_chunks(
                     or _evidence_role(result.section)
                     or evidence_role
                 ),
+            )
+        )
+
+    recorder = getattr(service, "record_search_evidence", None)
+    if recorder is not None:
+        await recorder(
+            PolicyRagSearchResponse(
+                query=response.query,
+                result_count=len(audited_results),
+                results=audited_results,
             )
         )
     return chunks

@@ -1,7 +1,7 @@
 # Dodam AI Chatbot 3-Axis Deep Dive Plan
 
 > Date: 2026-09-30  
-> Status: Cycles 0–3 have implementation/evidence artifacts on this branch; bounded AI-execution control is proposed as the next research cycle (2026-10-07)
+> Status: Cycles 0–5 have bounded implementation/evidence artifacts; RAG grounding and execution-control closure recorded on 2026-10-09
 > Primary repository: `bistel-mini-2/bistel-mini-2-backend`  
 > Companion repository: `bistel-mini-2/bistel-mini-2-frontend`  
 > Backend baseline: `origin/develop@08ebc167384cca490303059dcb927887c300bd12`  
@@ -1116,3 +1116,77 @@ fake provider만 사용한 경우 “운영 API 비용 절감”, “production 
 
 승인 전에는 current topology를 read-only로 추적하고 controlled fake-provider
 harness의 계약만 설계한다.
+
+---
+
+# 18. Closure decision — RAG grounding and bounded execution control
+
+## 18.1 Agreed stopping point
+
+이번 Dodam deep dive는 다음 두 산출물이 검증되면 닫는다.
+
+1. **RAG grounding:** 실제 `search_policy_chunks()` 호출이 최종적으로 반환한
+   chunk만 `decision_run → decision_claim → evidence_span → claim_evidence`에
+   retrieval evidence로 기록하고, isolated DB에서 그 row 수를 확인한다.
+2. **Bounded execution control:** recommendation rerank의 durable ownership,
+   cancellation, fallback, late-write fence, process-local admission telemetry를
+   controlled fake-provider/isolated DB 조건에서 확인한다.
+
+검색 trace는 answer correctness나 retrieval quality score를 뜻하지 않는다. 이는
+"어떤 query가 어떤 근거 chunk를 반환하여 사용자 결과에 사용될 수 있었는가"를
+재현 가능하게 남기는 provenance다.
+
+## 18.2 Explicitly excluded from this repository cycle
+
+다음 항목은 이번 종료 조건이 아니다.
+
+- multi-worker/global provider admission, durable queue, lease heartbeat, restart
+  recovery, distributed retry;
+- provider별 quota·가격·token budget에 기반한 production capacity tuning;
+- Kafka, Celery, Redis Streams, Kubernetes 또는 microservice 분리;
+- real-provider latency/quality benchmark 또는 production SLA claim.
+
+현재 lane은 설정 시 process-local semaphore일 뿐이다. 이를 global control로
+표현하지 않는다.
+
+## 18.3 Cross-project infrastructure boundary
+
+대규모 **LLM** 실행 제어는 EDA의 compute-job infrastructure와 동일하지 않다.
+LLM 서비스에는 provider quota, token/call cost, retrieval fan-out, model fallback,
+tenant fairness, streaming disconnect가 추가된다. 따라서 Dodam은 위 종료선까지
+LLM-specific evidence/degeneration contract를 남긴다.
+
+반면 durable `Run / Attempt / Lease / Worker / Recovery` 인프라의 장시간 실행·
+worker crash·recovery 입증은 EDA를 primary proving ground로 둔다. ECOUNT는
+DB-authoritative mutation과 reconciliation의 별도 증거를 제공한다. 향후 Dodam에
+multi-worker LLM admission을 도입할 필요가 실제로 확인되면, provider scope와
+quota/cost budget을 먼저 human gate에서 정한 별도 cycle로 시작한다.
+
+## 18.4 Final measurement gate
+
+실제 vector search probe는 query text를 configured embedding provider에 전송할 수
+있다. 따라서 다음 한 번의 isolated probe는 그 external egress와 provider 비용에
+대한 명시적 승인 뒤에만 실행한다.
+
+```text
+search_policy_chunks(query, policy_id, top_k)
+  → returned chunk IDs
+  → decision_run / decision_claim / evidence_span counts
+```
+
+기록할 수치는 returned chunk 수, persisted decision run 수, retrieval evidence
+claim 수, evidence span 수와 local search-and-trace elapsed time이다. local elapsed
+time은 provider latency나 retrieval quality metric으로 해석하지 않는다.
+
+### Execution record (2026-10-09)
+
+명시적으로 승인된 비개인 query `산재근로자 심리상담 신청 방법`을 policy ID `1`,
+`top_k=3`으로 한 번 실행했다. configured embedding provider와 isolated local
+PGVector를 사용한 이 실행은 chunk `20002`, `20001`, `20005` 세 건을 반환했고,
+새로운 `decision_run=1`, `retrieved evidence claim=3`, `evidence_span=3`을
+기록했다. local search-and-trace elapsed time은 `3621.173 ms`였다.
+
+이는 한 query의 provenance wiring evidence다. retrieval relevance, recall/precision,
+provider latency, real-user traffic, production cost 또는 capacity claim은 아니다.
+§18.1의 두 종료 산출물은 충족됐으며, §18.2의 항목은 새 human gate가 열리기 전까지
+의도적으로 범위 밖에 둔다.
