@@ -1,4 +1,5 @@
 import asyncio
+import statistics
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -23,6 +24,11 @@ from app.services.policy_display_service import (
     assessment_status_display,
     user_status_display,
 )
+from app.core.config import settings
+from app.services.recommendation_evidence_lane import (
+    ProcessLocalEvidenceLane,
+    get_process_local_evidence_lane,
+)
 
 
 PolicyChunkSearcher = Callable[..., Awaitable[list[EvidenceChunk]]]
@@ -36,10 +42,16 @@ class RecommendationService:
         # (풀/리랭크 출력도 이 값에 연동돼 함께 줄어든다.)
         result_limit: int = 4,
         evidence_timeout_seconds: float = 20,
+        evidence_lane: ProcessLocalEvidenceLane | None = None,
     ) -> None:
         self.chunk_searcher = chunk_searcher
         self.result_limit = result_limit
         self.evidence_timeout_seconds = evidence_timeout_seconds
+        self.evidence_lane = evidence_lane or (
+            get_process_local_evidence_lane(settings.recommendation_evidence_max_in_flight)
+            if settings.recommendation_evidence_max_in_flight is not None
+            else None
+        )
 
     async def build_result(
         self,
@@ -80,6 +92,8 @@ class RecommendationService:
                 "evidence_error": evidence_error,
                 "evidence_count_by_policy": evidence_debug.get("count_by_policy", {}),
                 "evidence_query_by_policy": evidence_debug.get("query_by_policy", {}),
+                "evidence_search_call_count": evidence_debug.get("search_call_count", 0),
+                "evidence_lane": evidence_debug.get("lane"),
                 "stored_candidate_count": len(candidates),
                 "excluded_candidate_count": self._candidate_count(
                     candidates,
@@ -121,20 +135,27 @@ class RecommendationService:
         debug: dict[str, Any] = {
             "query_by_policy": query_by_policy,
             "count_by_policy": {},
+            "search_call_count": len(candidates),
+            "lane": None,
         }
         if not candidates:
             return [], None, debug
 
-        async def search_one(policy_id: int, query: str) -> list[EvidenceChunk]:
-            return await asyncio.wait_for(
-                self.chunk_searcher(
-                    query=query,
-                    policy_ids=[policy_id],
-                    top_k=3,
-                    evidence_role="recommendation_reason",
-                ),
-                timeout=max(min(self.evidence_timeout_seconds / 2, 10), 5),
-            )
+        async def search_one(policy_id: int, query: str):
+            async def invoke() -> list[EvidenceChunk]:
+                return await asyncio.wait_for(
+                    self.chunk_searcher(
+                        query=query,
+                        policy_ids=[policy_id],
+                        top_k=3,
+                        evidence_role="recommendation_reason",
+                    ),
+                    timeout=max(min(self.evidence_timeout_seconds / 2, 10), 5),
+                )
+            if self.evidence_lane is None:
+                return await invoke(), None
+            async with self.evidence_lane.admit() as admission:
+                return await invoke(), admission
 
         tasks = [
             search_one(int(candidate.policy.policy_id), query_by_policy[
@@ -152,17 +173,29 @@ class RecommendationService:
 
         evidences: list[EvidenceChunk] = []
         errors: list[str] = []
+        admissions = []
         for result in results:
             if isinstance(result, BaseException):
                 errors.append(str(result))
                 continue
-            evidences.extend(result)
+            chunks, admission = result
+            evidences.extend(chunks)
+            if admission is not None:
+                admissions.append(admission)
 
         evidences = self._deduplicate_evidences(evidences)
         debug["count_by_policy"] = {
             policy_id: len(chunks)
             for policy_id, chunks in self._group_evidences(evidences).items()
         }
+        if admissions:
+            waits = [admission.queue_wait_ms for admission in admissions]
+            debug["lane"] = {
+                "capacity": self.evidence_lane.capacity,
+                "max_in_flight": max(admission.max_in_flight for admission in admissions),
+                "queue_wait_p50_ms": round(statistics.median(waits), 3),
+                "queue_wait_p95_ms": round(max(waits), 3),
+            }
         return evidences, "; ".join(errors) or None, debug
 
     def _to_result_item(

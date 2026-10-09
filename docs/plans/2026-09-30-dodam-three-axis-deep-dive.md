@@ -1119,11 +1119,11 @@ harness의 계약만 설계한다.
 
 ---
 
-# 18. Closure decision — RAG grounding and bounded execution control
+# 18. Superseded closure decision — RAG grounding and bounded execution control
 
 ## 18.1 Agreed stopping point
 
-이번 Dodam deep dive는 다음 두 산출물이 검증되면 닫는다.
+이전 Dodam deep dive 종료선은 다음 두 산출물이 검증되면 닫는 것으로 정했다.
 
 1. **RAG grounding:** 실제 `search_policy_chunks()` 호출이 최종적으로 반환한
    chunk만 `decision_run → decision_claim → evidence_span → claim_evidence`에
@@ -1188,5 +1188,40 @@ PGVector를 사용한 이 실행은 chunk `20002`, `20001`, `20005` 세 건을 �
 
 이는 한 query의 provenance wiring evidence다. retrieval relevance, recall/precision,
 provider latency, real-user traffic, production cost 또는 capacity claim은 아니다.
-§18.1의 두 종료 산출물은 충족됐으며, §18.2의 항목은 새 human gate가 열리기 전까지
-의도적으로 범위 밖에 둔다.
+§18.1의 두 종료 산출물은 충족됐다. 다만 이 판단은 candidate-level RAG fan-out의
+별도 resource control을 확인하기 전의 종료선이었다. 이 문서의 종료 표현은 §19의
+bounded follow-up으로 대체한다.
+
+---
+
+# 19. Bounded follow-up — separate RAG fan-out control
+
+## 19.1 Why the earlier closure was insufficient
+
+RAG evidence trace는 반환 근거의 provenance를 남기지만, 후보별
+`asyncio.gather()`가 외부 chunk search에 만드는 동시 실행 피크를 제어하지 않는다.
+Rerank admission lane만으로는 이 이전 단계의 quota pressure, queue wait, 또는
+candidate fan-out blast radius를 측정할 수 없다.
+
+## 19.2 Implemented boundary
+
+candidate-level evidence search에는 rerank와 공유하지 않는 optional
+process-local lane을 둔다. unset은 기존 unbounded 동작을 보존하고, 설정된 값은
+한 Python process에서만 유효하다. result summary에는 evidence search call count와
+lane capacity/max in-flight/queue-wait p50/p95를 남긴다.
+
+## 19.3 Controlled evidence
+
+`docs/deep-dive/chatbot/15-rag-fanout-execution-control.md`의 fake-search
+comparison은 4개 후보 fixture에서 peak 4 → 2 → 1을 확인했고, 같은 4개 호출을
+완료하는 대신 elapsed p50이 약 21.255 → 42.627 → 84.699 ms로 증가함을 기록한다.
+이는 control tradeoff evidence이며 provider capacity, actual cost saving 또는
+production concurrency claim이 아니다.
+
+## 19.4 Remaining explicit boundary
+
+이 cycle은 RAG 큐 대기 중 request cancellation을 재확인하여 provider call 자체를
+생략하는 lifecycle integration은 포함하지 않는다. 현재 durable fence는 terminal
+write overwrite를 막지만, 그 이전 RAG queue에서의 call waste 방지는 별도 request
+ownership 전달과 human gate가 필요하다. global/multi-worker admission, durable
+queue, provider quota/cost budget도 여전히 다음 cycle의 결정 항목이다.

@@ -2,6 +2,7 @@ import asyncio
 from types import SimpleNamespace
 
 from app.services.recommendation_candidate_service import PolicyCandidate
+from app.services.recommendation_evidence_lane import ProcessLocalEvidenceLane
 from app.services.recommendation_service import RecommendationService
 
 
@@ -57,3 +58,55 @@ def test_recommendation_evidence_search_is_policy_scoped_per_candidate() -> None
     assert len(calls) == 2
     assert {tuple(call["policy_ids"]) for call in calls} == {(101,), (202,)}
     assert all(call["top_k"] == 3 for call in calls)
+
+
+def test_recommendation_evidence_lane_bounds_candidate_fan_out() -> None:
+    in_flight = 0
+    max_in_flight = 0
+
+    async def fake_chunk_searcher(**kwargs):
+        nonlocal in_flight, max_in_flight
+        in_flight += 1
+        max_in_flight = max(max_in_flight, in_flight)
+        try:
+            await asyncio.sleep(0.01)
+            return []
+        finally:
+            in_flight -= 1
+
+    service = RecommendationService(
+        chunk_searcher=fake_chunk_searcher,
+        evidence_timeout_seconds=5,
+        evidence_lane=ProcessLocalEvidenceLane(capacity=1),
+    )
+    candidates = [
+        PolicyCandidate(
+            policy=SimpleNamespace(
+                policy_id=policy_id,
+                policy_name=f"정책 {policy_id}",
+                policy_code=str(policy_id),
+                benefit_type=None,
+            ),
+            detail=SimpleNamespace(target_description="대상"),
+            retrieval_score=0.8,
+            candidate_status="CANDIDATE",
+            filter_match_json={},
+            matched_rules=[],
+        )
+        for policy_id in (101, 202, 303)
+    ]
+
+    _, error, debug = asyncio.run(
+        service._search_evidences(
+            condition={"stage": "pregnancy", "needs": ["의료비"]},
+            candidates=candidates,
+        )
+    )
+
+    assert error is None
+    assert max_in_flight == 1
+    assert debug["search_call_count"] == 3
+    assert debug["lane"] is not None
+    assert debug["lane"]["capacity"] == 1
+    assert debug["lane"]["max_in_flight"] == 1
+    assert debug["lane"]["queue_wait_p95_ms"] > 0
