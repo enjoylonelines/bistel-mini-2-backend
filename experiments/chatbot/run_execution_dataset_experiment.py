@@ -3,11 +3,16 @@
 The dataset shape follows an LLM-observability experiment: every scenario is a
 versioned dataset item, each variant emits item-level scores, and aggregate
 results compare the same items. It is intentionally local and fake-provider
-only; it neither sends traces to Langfuse nor claims provider cost or capacity.
+only. ``--langfuse`` explicitly exports the same synthetic items as two Langfuse
+experiment runs. It never sends a real recommendation request, user profile,
+policy text, provider token usage, or production capacity data.
 
 Example:
   PYTHONPATH=. .venv/bin/python experiments/chatbot/run_execution_dataset_experiment.py \
     --output /tmp/dodam-execution-v1.json
+
+  PYTHONPATH=. .venv/bin/python experiments/chatbot/run_execution_dataset_experiment.py \
+    --langfuse --output /tmp/dodam-execution-v1-langfuse.json
 """
 
 from __future__ import annotations
@@ -195,6 +200,153 @@ def _aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _local_experiment_data(dataset: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Build Langfuse local-data items without including user or policy content."""
+    return [
+        {
+            "input": {
+                "scenario_id": str(item["scenario_id"]),
+                "candidate_count": int(item["candidate_count"]),
+                "lane_capacity": int(item["lane_capacity"]),
+                "cancel_phase": str(item["cancel_phase"]),
+                "provider_outcome": str(item["provider_outcome"]),
+            },
+            "expected_output": {"control_contracts_pass": True},
+            "metadata": {
+                "dataset_version": "v1",
+                "data_classification": "synthetic_control_only",
+            },
+        }
+        for item in dataset
+    ]
+
+
+def _item_evaluator(*, output: dict[str, Any], **_kwargs: Any) -> list[Any]:
+    """Attach deterministic control-flow contracts as Langfuse item scores."""
+    from langfuse import Evaluation
+
+    return [
+        Evaluation(name=name, value=bool(value), data_type="BOOLEAN")
+        for name, value in output["scores"].items()
+    ]
+
+
+def _run_evaluator(*, item_results: list[Any], **_kwargs: Any) -> list[Any]:
+    """Expose synthetic call counts for comparison; these are not billing data."""
+    from langfuse import Evaluation
+
+    observations = [result.output["observations"] for result in item_results]
+    return [
+        Evaluation(
+            name="provider_calls_started_total",
+            value=sum(int(item["provider_calls_started"]) for item in observations),
+            comment="Synthetic fake-search calls; not a provider invoice or capacity metric.",
+        ),
+        Evaluation(
+            name="post_cancel_provider_calls_total",
+            value=sum(
+                int(item["post_cancel_provider_calls"]) for item in observations
+            ),
+            comment="Synthetic calls started after the controlled cancellation point.",
+        ),
+        Evaluation(
+            name="avoided_calls_total",
+            value=sum(int(item["avoided_calls"]) for item in observations),
+            comment="Controlled fake-search calls avoided by the execution recheck.",
+        ),
+        Evaluation(
+            name="estimated_embedding_input_tokens_avoided_total",
+            value=sum(
+                int(item["estimated_embedding_input_tokens_avoided"] or 0)
+                for item in observations
+            ),
+            comment="Local token estimate only; not provider usage or cost.",
+        ),
+    ]
+
+
+def _langfuse_result_reference(result: Any) -> dict[str, Any]:
+    return {
+        "experiment_id": result.experiment_id,
+        "run_name": result.run_name,
+        "item_count": len(result.item_results),
+        "dataset_run_url": result.dataset_run_url,
+    }
+
+
+def run_langfuse_experiments(
+    dataset_path: Path = DEFAULT_DATASET,
+    *,
+    max_concurrency: int = 1,
+    langfuse_client: Any | None = None,
+) -> dict[str, Any]:
+    """Export the two existing synthetic variants as comparable Langfuse runs.
+
+    ``max_concurrency`` controls only this short-lived SDK experiment runner. It
+    neither configures nor measures application/provider concurrency.
+    """
+    if max_concurrency < 1:
+        raise ValueError("max_concurrency must be positive")
+
+    dataset = _load_dataset(dataset_path)
+    if langfuse_client is None:
+        from app.core.config import get_settings
+        from langfuse import Langfuse
+
+        settings = get_settings()
+        if not settings.langfuse_public_key or not settings.langfuse_secret_key:
+            raise RuntimeError(
+                "LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY are required for --langfuse"
+            )
+        langfuse_client = Langfuse(
+            public_key=settings.langfuse_public_key,
+            secret_key=settings.langfuse_secret_key,
+            base_url=settings.langfuse_base_url,
+        )
+
+    data = _local_experiment_data(dataset)
+    results: dict[str, Any] = {}
+    try:
+        for variant in ("baseline", "treatment"):
+
+            async def task(*, item: dict[str, Any], _variant: Variant = variant, **_kwargs: Any) -> dict[str, Any]:
+                return await _run_item(item["input"], _variant)
+
+            result = langfuse_client.run_experiment(
+                name="dodam-execution-v1",
+                run_name=f"dodam-execution-v1-{variant}",
+                description=(
+                    "Synthetic RAG cancellation-control experiment. No user request, "
+                    "policy text, provider call, billing data, or production traffic."
+                ),
+                data=data,
+                task=task,
+                evaluators=[_item_evaluator],
+                run_evaluators=[_run_evaluator],
+                max_concurrency=max_concurrency,
+                metadata={
+                    "variant": variant,
+                    "dataset_version": "v1",
+                    "measurement_scope": "synthetic_control_only",
+                    "recommendation_capacity_scope": "not_measured",
+                },
+            )
+            results[variant] = _langfuse_result_reference(result)
+    finally:
+        langfuse_client.flush()
+
+    return {
+        "experiment_name": "dodam-execution-v1",
+        "dataset_version": "v1",
+        "scope": (
+            "Langfuse export of the local fake-search control experiment; no real "
+            "provider, database, terminal write, user data, or production capacity."
+        ),
+        "max_concurrency": max_concurrency,
+        "runs": results,
+    }
+
+
 async def run_experiment(dataset_path: Path = DEFAULT_DATASET) -> dict[str, Any]:
     dataset = _load_dataset(dataset_path)
     baseline = [await _run_item(item, "baseline") for item in dataset]
@@ -239,8 +391,24 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", type=Path, default=DEFAULT_DATASET)
     parser.add_argument("--output", type=Path)
+    parser.add_argument(
+        "--langfuse",
+        action="store_true",
+        help="Export the synthetic baseline and treatment runs to configured Langfuse.",
+    )
+    parser.add_argument(
+        "--langfuse-max-concurrency",
+        type=int,
+        default=1,
+        help="SDK experiment-runner item concurrency only; not application capacity.",
+    )
     args = parser.parse_args()
     payload = asyncio.run(run_experiment(args.dataset))
+    if args.langfuse:
+        payload["langfuse"] = run_langfuse_experiments(
+            args.dataset,
+            max_concurrency=args.langfuse_max_concurrency,
+        )
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")

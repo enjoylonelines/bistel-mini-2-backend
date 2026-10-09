@@ -48,6 +48,7 @@ langgraph-checkpoint==4.0.1
 langgraph-checkpoint-postgres==3.0.4
 langgraph-prebuilt==1.0.8
 langgraph-sdk==0.3.9
+langfuse==4.17.0
 langsmith==0.7.9
 markdown-it-py==3.0.0
 MarkupSafe==3.0.2

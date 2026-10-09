@@ -10,6 +10,11 @@ class Settings(BaseSettings):
     psycopg_database_url: str
     data_go_kr_service_key: str | None = None
     openai_api_key: str | None = None
+    # Optional observability project credentials. They are used only by an
+    # explicitly requested experiment export, never by normal request handling.
+    langfuse_public_key: str | None = None
+    langfuse_secret_key: str | None = None
+    langfuse_base_url: str | None = None
     jwt_secret_key: str
     jwt_algorithm: str
     access_token_expire_minutes: int

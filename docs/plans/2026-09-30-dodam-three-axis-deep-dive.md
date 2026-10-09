@@ -1247,8 +1247,11 @@ usage sample도 다음 human gate의 결정 항목이다.
 같은 dataset item을 한 번씩 실행하고 item-level call/error/cancellation score와
 aggregate scorecard를 비교한다.
 
-이 방식은 Langfuse-style dataset experiment의 구조를 로컬에서 구현한 것이며,
-Langfuse project ingestion이나 production observability 도입을 의미하지 않는다.
+이 방식은 처음에는 Langfuse-style dataset experiment의 구조를 로컬에서 구현한
+것이었다. 이후 opt-in Langfuse SDK export를 추가해 같은 24개 local dataset item을
+baseline/treatment 각각의 experiment run으로 전송하고, item-level boolean score와
+run-level synthetic call-count score를 확인했다. 이는 experiment observability
+연결 증거일 뿐 production request instrumentation은 아니다.
 `docs/deep-dive/chatbot/17-execution-dataset-experiment.md`의 v1 결과는
 post-cancel starts 94 → 0, fake-search starts 112 → 18(-83.929%)를 기록한다.
 이는 versioned local fake-search dataset에 한정된 control-flow claim이다.

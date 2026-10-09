@@ -12,8 +12,10 @@ observability tools: freeze a dataset, run baseline and candidate on exactly
 the same items, attach item-level scores, then compare aggregate results and
 inspect individual failures.
 
-No Langfuse project is configured here. The JSONL dataset and output shape are
-Langfuse-ready in concept, not Langfuse ingestion evidence.
+The dataset remains local and synthetic. When explicitly invoked with
+`--langfuse`, the same 24 items are exported as two Langfuse SDK experiment
+runs: one for baseline and one for treatment. This is observability evidence
+for the experiment itself, not production application instrumentation.
 
 ## Dataset v1
 
@@ -77,3 +79,31 @@ The claim must retain `versioned local fake-search dataset` or equivalent
 wording. It does not establish production cancellation frequency, provider
 billing, real retrieval quality, terminal-write correctness, multi-worker
 behavior, or global capacity.
+
+## Langfuse export and receipt check
+
+The export is opt-in, so normal local regression tests do not send any data.
+It loads `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, and
+`LANGFUSE_BASE_URL` from the local `.env` only when `--langfuse` is supplied.
+
+```bash
+PYTHONPATH=. .venv/bin/python experiments/chatbot/run_execution_dataset_experiment.py \
+  --langfuse \
+  --output /tmp/dodam-execution-v1-langfuse.json
+```
+
+The experiment runner is intentionally serial (`--langfuse-max-concurrency=1`)
+to preserve the existing deterministic scenario execution. This is a runner
+setting, not an application or provider capacity limit.
+
+On 2026-10-09, the configured Langfuse project received two runs with 24 items
+each: `dodam-execution-v1-baseline` (experiment ID `9f446eab1379eebb`) and
+`dodam-execution-v1-treatment` (experiment ID `36ef1af81052eee9`). The
+Experiments page showed 24 items and zero runner errors for each run. Its
+item-level boolean scores reflected baseline `no_post_cancel_provider_call`
+as false 22 / true 2, and treatment as true 24, matching the local result.
+
+Only synthetic scenario ID, candidate count, lane capacity, controlled cancel
+phase, controlled fake-provider outcome, and generated control-flow output are
+exported. No user request, profile, policy text, real provider response,
+provider token usage, billing value, or production traffic is exported.
