@@ -1227,6 +1227,12 @@ actual LLM usage는 provider response가 반환할 때만 `llm_provider_token_us
 기록한다. 자세한 controlled boundary는
 `docs/deep-dive/chatbot/16-token-waste-telemetry.md`에 남긴다.
 
+동일한 후보 4개/capacity 1/첫 검색 직후 취소 fixture를 baseline과 treatment에
+각각 100회 반복했을 때, baseline의 started calls는 400(취소 뒤 300)이었고
+treatment는 100(취소 뒤 0)이었다. 즉 이 조건에서 started calls 75% 감소,
+post-cancel call 300 → 0을 관측했다. 이는 deterministic fake-search control-flow
+evidence이며 production cancellation rate, provider cost, global capacity claim은 아니다.
+
 이는 final recheck 뒤 이미 시작한 call의 cancellation 또는 global/multi-worker
 admission을 해결하지 않는다. durable queue, provider quota/cost budget, real-provider
 usage sample도 다음 human gate의 결정 항목이다.

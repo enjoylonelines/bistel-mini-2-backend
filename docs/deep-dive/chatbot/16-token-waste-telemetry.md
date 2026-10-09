@@ -56,6 +56,26 @@ The harness itself does not use a database; the graph-node regression verifies
 that the production path supplies the durable execution-owner check and emits
 `RAG_EVIDENCE_DROPPED`.
 
+### Repeated baseline versus treatment comparison
+
+The same in-process fake-search fixture was repeated 100 times for each mode:
+four candidates, capacity one, cancellation immediately after the first search
+starts. Baseline disables the post-admission execution recheck, representing
+the earlier evidence-lane behavior. Treatment supplies the current callback
+that the graph wires to the durable execution-owner read.
+
+| Mode | Trials | Started searches | Searches starting after cancellation | Prevented calls |
+| --- | ---: | ---: | ---: | ---: |
+| baseline | 100 | 400 | 300 | 0 |
+| treatment | 100 | 100 | 0 | 300 |
+
+Under this exact controlled cancellation timing, treatment reduced all started
+search calls by **75%** and eliminated searches that began after cancellation
+in all 100 repetitions (**300 → 0**). Its prevented-query tokenizer estimate
+totaled 9,600 embedding input tokens. This is a deterministic in-process
+control-flow comparison, not real provider billing, a cancellation-rate
+estimate, or production traffic evidence.
+
 ### Rerank response usage
 
 The existing isolated-DB controlled rerank harness now makes its fake provider

@@ -171,6 +171,121 @@ async def _run_queued_cancellation_probe() -> dict[str, Any]:
     }
 
 
+async def _run_cancellation_trial(
+    *, candidate_count: int, recheck_execution_after_admission: bool
+) -> dict[str, Any]:
+    """Run one identical cancellation timing against baseline or treatment.
+
+    Baseline represents the evidence lane before durable ownership was rechecked
+    after admission. Treatment supplies the current execution callback. Neither
+    side calls an external provider or persists a recommendation result.
+    """
+    active = True
+    cancelled = False
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+    provider_calls = 0
+    post_cancel_provider_calls = 0
+
+    async def fake_chunk_searcher(**_kwargs: Any) -> list[Any]:
+        nonlocal provider_calls, post_cancel_provider_calls
+        provider_calls += 1
+        if cancelled:
+            post_cancel_provider_calls += 1
+        first_started.set()
+        await release_first.wait()
+        return []
+
+    async def execution_is_active() -> bool:
+        return active
+
+    service = RecommendationService(
+        chunk_searcher=fake_chunk_searcher,
+        evidence_timeout_seconds=5,
+        evidence_lane=ProcessLocalEvidenceLane(1),
+    )
+    task = asyncio.create_task(
+        service._search_evidences(
+            condition={"stage": "controlled", "needs": ["cancellation"]},
+            candidates=_candidates(candidate_count),
+            execution_is_active=(
+                execution_is_active if recheck_execution_after_admission else None
+            ),
+        )
+    )
+    await first_started.wait()
+    cancelled = True
+    active = False
+    release_first.set()
+    evidences, error, debug = await task
+    if error is not None or evidences:
+        raise AssertionError(f"unexpected controlled cancellation result: {error}")
+    return {
+        "provider_calls_started": provider_calls,
+        "post_cancel_provider_calls": post_cancel_provider_calls,
+        "avoided_calls": int(debug["avoided_call_count"]),
+        "estimated_embedding_input_tokens_avoided": debug[
+            "estimated_embedding_input_tokens_avoided"
+        ],
+    }
+
+
+async def _measure_cancellation_comparison(
+    *, candidate_count: int, trials: int
+) -> dict[str, Any]:
+    async def measure_mode(recheck_execution_after_admission: bool) -> dict[str, Any]:
+        rows = [
+            await _run_cancellation_trial(
+                candidate_count=candidate_count,
+                recheck_execution_after_admission=recheck_execution_after_admission,
+            )
+            for _ in range(trials)
+        ]
+        return {
+            "trials": trials,
+            "provider_calls_started": sum(
+                int(row["provider_calls_started"]) for row in rows
+            ),
+            "post_cancel_provider_calls": sum(
+                int(row["post_cancel_provider_calls"]) for row in rows
+            ),
+            "avoided_calls": sum(int(row["avoided_calls"]) for row in rows),
+            "estimated_embedding_input_tokens_avoided": sum(
+                int(row["estimated_embedding_input_tokens_avoided"] or 0)
+                for row in rows
+            ),
+        }
+
+    baseline = await measure_mode(False)
+    treatment = await measure_mode(True)
+    expected_baseline_calls = trials * candidate_count
+    expected_post_cancel_calls = trials * (candidate_count - 1)
+    if (
+        baseline["provider_calls_started"] != expected_baseline_calls
+        or baseline["post_cancel_provider_calls"] != expected_post_cancel_calls
+        or treatment["provider_calls_started"] != trials
+        or treatment["post_cancel_provider_calls"] != 0
+        or treatment["avoided_calls"] != expected_post_cancel_calls
+    ):
+        raise AssertionError("controlled baseline/treatment cancellation contract failed")
+    return {
+        "scope": (
+            "in-process fake search; capacity=1; cancellation immediately after "
+            "the first search starts; no provider, database, or terminal write"
+        ),
+        "candidate_count": candidate_count,
+        "trials_per_mode": trials,
+        "baseline_without_post_admission_recheck": baseline,
+        "treatment_with_durable_recheck_callback": treatment,
+        "total_started_call_reduction_percent": round(
+            (1 - treatment["provider_calls_started"] / baseline["provider_calls_started"])
+            * 100,
+            3,
+        ),
+        "post_cancel_call_reduction_percent": 100.0,
+    }
+
+
 async def main(args: argparse.Namespace) -> dict[str, Any]:
     modes = [None, 1, 2]
     return {
@@ -191,6 +306,10 @@ async def main(args: argparse.Namespace) -> dict[str, Any]:
             for capacity in modes
         ],
         "queued_cancellation_probe": await _run_queued_cancellation_probe(),
+        "repeated_cancellation_comparison": await _measure_cancellation_comparison(
+            candidate_count=args.candidate_count,
+            trials=args.cancellation_trials,
+        ),
     }
 
 
@@ -199,12 +318,20 @@ if __name__ == "__main__":
     parser.add_argument("--candidate-count", type=int, default=4)
     parser.add_argument("--delay-ms", type=float, default=20)
     parser.add_argument("--runs", type=int, default=5)
+    parser.add_argument("--cancellation-trials", type=int, default=100)
     parser.add_argument(
         "--output", type=Path, default=Path("output/controlled-rag-fanout.json")
     )
     parsed = parser.parse_args()
-    if parsed.candidate_count < 1 or parsed.delay_ms <= 0 or parsed.runs < 1:
-        parser.error("candidate-count, delay-ms, and runs must be positive")
+    if (
+        parsed.candidate_count < 2
+        or parsed.delay_ms <= 0
+        or parsed.runs < 1
+        or parsed.cancellation_trials < 1
+    ):
+        parser.error(
+            "candidate-count must be at least 2; delay-ms, runs, and cancellation-trials must be positive"
+        )
     payload = asyncio.run(main(parsed))
     parsed.output.parent.mkdir(parents=True, exist_ok=True)
     parsed.output.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
