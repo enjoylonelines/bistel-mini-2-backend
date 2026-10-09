@@ -1266,3 +1266,13 @@ started/avoided call, fallback/error category 및 provider-reported token usage�
 허용한다. controlled fake-provider receipt trace는 schema/redaction 확인일 뿐,
 production traffic·latency·cost·capacity 증거가 아니다. 자세한 경계와 실행 방법은
 `docs/deep-dive/chatbot/18-langfuse-recommendation-telemetry.md`에 기록한다.
+
+### Local E2E receipt (2026-10-09)
+
+fresh local application과 disposable `dodam_e2e`에서 비개인 fixed fixture 한 건을
+완료해 result `2`, RAG started calls `2`, returned evidence `4`, rerank provider
+calls `1`, provider-reported tokens `3,657 input / 814 output / 4,471 total`을
+기록했다. post-answer root elapsed는 `6678.669 ms`였고 fallback은 없었다. Langfuse의
+root/retriever/generation trace도 확인했다. lane을 설정하지 않아 avoided calls는 `0`,
+queue wait/in-flight은 미측정이다. 이 한 건은 percentile·품질·실제 청구비용·용량·global
+concurrency 증거가 아니다.

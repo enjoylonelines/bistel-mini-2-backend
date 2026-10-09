@@ -60,3 +60,27 @@ This checks trace shape and redaction only. It does not demonstrate a real
 recommendation request, provider latency, provider billing, production traffic,
 or capacity. A real application trace requires the explicit flag above and a
 fresh application process.
+
+## Local E2E execution record
+
+On 2026-10-09, a freshly restarted local application backed by the disposable
+`dodam_e2e` database completed one non-personal, fixed low-income legal-support
+recommendation fixture after its follow-up answers were supplied. The committed
+result contained two recommendations. The post-answer execution trace recorded:
+
+- root elapsed time: `6678.669 ms`;
+- RAG: two started evidence-search calls and four returned evidence chunks;
+- avoided RAG calls: zero, because no lane capacity was configured;
+- rerank: one provider call, successful augmentation (no fallback);
+- provider-reported usage: 3,657 input tokens, 814 output tokens, 4,471 total.
+
+Langfuse received the application root span, RAG retriever, and rerank generation
+with the operational-only schema above. Its UI displayed an inferred model cost
+of `$0.006406`; this is a Langfuse model-configuration estimate, not a provider
+invoice.
+
+This is one local E2E observation using fixture policy data. It is not a
+latency percentile, relevance evaluation, production traffic sample, provider
+billing measurement, capacity result, or global-concurrency proof. Queue wait
+and in-flight fields remain unavailable in this record because admission lanes
+were intentionally not configured.
