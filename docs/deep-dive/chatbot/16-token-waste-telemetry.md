@@ -64,6 +64,22 @@ successful call. Its recorded `RERANK_RELEASED` and terminal events preserve
 that object; 429/5xx/timeout rows leave usage unavailable. This only verifies
 telemetry plumbing. The numbers are not a model cost or real token benchmark.
 
+### Approved real-provider smoke record
+
+On 2026-10-09, one explicitly approved external rerank call used the fixed,
+non-personal fixture in `experiments/chatbot/real_provider_rerank_usage_probe.py`.
+It made one provider call, completed without fallback, and the raw response
+usage was preserved identically in the output and result summary:
+
+| Input tokens | Output tokens | Total tokens |
+| ---: | ---: | ---: |
+| 2,831 | 328 | 3,159 |
+
+The probe did not use a database, RAG search, real user input, arrival load, or
+pricing conversion. It verifies only the live adapter's usage-metadata wiring
+for this one model/configuration and fixture. It is not a token-saving,
+provider-latency, quality, or production-cost claim.
+
 ## Remaining boundary
 
 Before reporting actual token reduction, run an approved real-provider sample
