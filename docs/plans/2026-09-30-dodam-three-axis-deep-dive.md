@@ -1236,3 +1236,19 @@ evidence이며 production cancellation rate, provider cost, global capacity clai
 이는 final recheck 뒤 이미 시작한 call의 cancellation 또는 global/multi-worker
 admission을 해결하지 않는다. durable queue, provider quota/cost budget, real-provider
 usage sample도 다음 human gate의 결정 항목이다.
+
+---
+
+# 20. Versioned execution dataset experiment
+
+단일 fixture의 반복 횟수를 headline으로 쓰지 않기 위해, `dodam_execution_v1`은
+후보 2/4/8, lane capacity 1/2, 취소 시점 두 종류, fake provider 성공/오류를
+조합한 24개의 명시적 scenario를 versioned JSONL로 고정한다. Baseline과 treatment는
+같은 dataset item을 한 번씩 실행하고 item-level call/error/cancellation score와
+aggregate scorecard를 비교한다.
+
+이 방식은 Langfuse-style dataset experiment의 구조를 로컬에서 구현한 것이며,
+Langfuse project ingestion이나 production observability 도입을 의미하지 않는다.
+`docs/deep-dive/chatbot/17-execution-dataset-experiment.md`의 v1 결과는
+post-cancel starts 94 → 0, fake-search starts 112 → 18(-83.929%)를 기록한다.
+이는 versioned local fake-search dataset에 한정된 control-flow claim이다.
