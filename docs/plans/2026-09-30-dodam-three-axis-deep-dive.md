@@ -1220,8 +1220,13 @@ production concurrency claim이 아니다.
 
 ## 19.4 Remaining explicit boundary
 
-이 cycle은 RAG 큐 대기 중 request cancellation을 재확인하여 provider call 자체를
-생략하는 lifecycle integration은 포함하지 않는다. 현재 durable fence는 terminal
-write overwrite를 막지만, 그 이전 RAG queue에서의 call waste 방지는 별도 request
-ownership 전달과 human gate가 필요하다. global/multi-worker admission, durable
-queue, provider quota/cost budget도 여전히 다음 cycle의 결정 항목이다.
+RAG 큐 대기 항목은 admission 직후 durable execution ownership을 재확인하고,
+취소가 이기면 `RAG_EVIDENCE_DROPPED`로 provider call 없이 종료한다. 이때
+방지 호출 수와 tokenizer 기반 예상 embedding input tokens를 별도 기록한다.
+actual LLM usage는 provider response가 반환할 때만 `llm_provider_token_usage`로
+기록한다. 자세한 controlled boundary는
+`docs/deep-dive/chatbot/16-token-waste-telemetry.md`에 남긴다.
+
+이는 final recheck 뒤 이미 시작한 call의 cancellation 또는 global/multi-worker
+admission을 해결하지 않는다. durable queue, provider quota/cost budget, real-provider
+usage sample도 다음 human gate의 결정 항목이다.

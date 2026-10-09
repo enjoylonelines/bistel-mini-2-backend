@@ -137,7 +137,41 @@ class RecommendationGraphNodes:
             candidates=state.get("candidates", []),
             selected_candidates=rerank_candidates,
             assessments=state.get("assessments", []),
+            execution_is_active=(
+                lambda: self.request_repository.has_active_recommendation_execution(
+                    state["db"],
+                    state["request_id"],
+                    state.get("execution_token"),
+                )
+                if state.get("execution_token")
+                else None
+            ),
         )
+        evidence_summary = result_json.get("summary") or {}
+        avoided_calls = int(
+            evidence_summary.get("evidence_search_avoided_call_count") or 0
+        )
+        if avoided_calls:
+            await self.execution_event_repository.record(
+                state["db"],
+                request_id=state["request_id"],
+                execution_token=state.get("execution_token"),
+                event_type="RAG_EVIDENCE_DROPPED",
+                stage="RAG_EVIDENCE_LANE",
+                outcome="CANCELLED_BEFORE_PROVIDER_CALL",
+                details={
+                    "provider_call_count": 0,
+                    "avoided_call_count": avoided_calls,
+                    "estimated_embedding_input_tokens_avoided": (
+                        evidence_summary.get(
+                            "evidence_estimated_embedding_input_tokens_avoided"
+                        )
+                    ),
+                    "token_estimate_model": evidence_summary.get(
+                        "evidence_token_estimate_model"
+                    ),
+                },
+            )
         return {
             **state,
             "base_result_json": result_json,
@@ -195,6 +229,7 @@ class RecommendationGraphNodes:
                 "provider_token_usage_available": (
                     rerank_result.provider_token_usage_available
                 ),
+                "provider_token_usage": rerank_result.provider_token_usage,
                 "fallback_used": rerank_result.fallback_used,
             },
         )
@@ -252,6 +287,7 @@ class RecommendationGraphNodes:
                 "llm_error": None,
                 "llm_provider_call_count": 0,
                 "llm_provider_token_usage_available": False,
+                "llm_provider_token_usage": None,
                 "llm_skipped_due_to_cancellation": True,
             }
         )

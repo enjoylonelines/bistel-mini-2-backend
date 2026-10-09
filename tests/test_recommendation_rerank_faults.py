@@ -8,7 +8,10 @@ from app.schemas.recommendation_rerank_schema import (
     LlmRecommendationItem,
     LlmRecommendationRerankResult,
 )
-from app.services.recommendation_rerank_service import RecommendationRerankService
+from app.services.recommendation_rerank_service import (
+    LlmInvocation,
+    RecommendationRerankService,
+)
 
 
 def _base_result() -> dict[str, Any]:
@@ -73,6 +76,33 @@ def test_controlled_fake_provider_fixed_and_long_tail_delay_succeed(delay: float
     assert output.fallback_used is False
     assert output.result_json["summary"]["llm_rerank_used"] is True
     assert output.result_json["summary"]["llm_fallback_used"] is False
+
+
+def test_fake_provider_usage_is_preserved_separately_from_fallback_state() -> None:
+    async def invoker(messages):
+        return LlmInvocation(
+            result=_success(),
+            provider_token_usage={
+                "input_tokens": 120,
+                "output_tokens": 45,
+                "total_tokens": 165,
+            },
+        )
+
+    output = asyncio.run(_run(invoker))
+
+    assert output.fallback_used is False
+    assert output.provider_token_usage_available is True
+    assert output.provider_token_usage == {
+        "input_tokens": 120,
+        "output_tokens": 45,
+        "total_tokens": 165,
+    }
+    assert output.result_json["summary"]["llm_provider_token_usage"] == {
+        "input_tokens": 120,
+        "output_tokens": 45,
+        "total_tokens": 165,
+    }
 
 
 @pytest.mark.parametrize(

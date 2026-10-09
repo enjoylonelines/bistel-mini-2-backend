@@ -32,6 +32,7 @@ from app.services.recommendation_evidence_lane import (
 
 
 PolicyChunkSearcher = Callable[..., Awaitable[list[EvidenceChunk]]]
+RecommendationExecutionCheck = Callable[[], Awaitable[bool]]
 
 
 class RecommendationService:
@@ -59,6 +60,7 @@ class RecommendationService:
         candidates: list[PolicyCandidate],
         selected_candidates: list[PolicyCandidate] | None = None,
         assessments: list[RecommendationPolicyAssessment] | None = None,
+        execution_is_active: RecommendationExecutionCheck | None = None,
     ) -> dict[str, Any]:
         assessments = assessments or []
         assessment_by_policy = self._assessment_by_policy(assessments)
@@ -70,6 +72,7 @@ class RecommendationService:
         evidences, evidence_error, evidence_debug = await self._search_evidences(
             condition=merged_condition_json,
             candidates=selected_candidates,
+            execution_is_active=execution_is_active,
         )
         evidence_by_policy = self._group_evidences(evidences)
 
@@ -93,6 +96,15 @@ class RecommendationService:
                 "evidence_count_by_policy": evidence_debug.get("count_by_policy", {}),
                 "evidence_query_by_policy": evidence_debug.get("query_by_policy", {}),
                 "evidence_search_call_count": evidence_debug.get("search_call_count", 0),
+                "evidence_search_avoided_call_count": evidence_debug.get(
+                    "avoided_call_count", 0
+                ),
+                "evidence_estimated_embedding_input_tokens_avoided": (
+                    evidence_debug.get("estimated_embedding_input_tokens_avoided")
+                ),
+                "evidence_token_estimate_model": evidence_debug.get(
+                    "token_estimate_model"
+                ),
                 "evidence_lane": evidence_debug.get("lane"),
                 "stored_candidate_count": len(candidates),
                 "excluded_candidate_count": self._candidate_count(
@@ -123,6 +135,7 @@ class RecommendationService:
         self,
         condition: dict[str, Any],
         candidates: list[PolicyCandidate],
+        execution_is_active: RecommendationExecutionCheck | None = None,
     ) -> tuple[list[EvidenceChunk], str | None, dict[str, Any]]:
         # 정책마다 정책명/지원대상/혜택 + 사용자 조건을 반영한 전용 쿼리를 만들어
         # 공통 일반 쿼리보다 정책별 근거 품질을 높인다.
@@ -135,7 +148,10 @@ class RecommendationService:
         debug: dict[str, Any] = {
             "query_by_policy": query_by_policy,
             "count_by_policy": {},
-            "search_call_count": len(candidates),
+            "search_call_count": 0,
+            "avoided_call_count": 0,
+            "estimated_embedding_input_tokens_avoided": None,
+            "token_estimate_model": None,
             "lane": None,
         }
         if not candidates:
@@ -152,10 +168,25 @@ class RecommendationService:
                     ),
                     timeout=max(min(self.evidence_timeout_seconds / 2, 10), 5),
                 )
+
+            async def can_start_search() -> bool:
+                return execution_is_active is None or await execution_is_active()
+
+            async def run_or_skip(admission: object | None = None):
+                if not await can_start_search():
+                    return [], admission, self._skipped_search_usage(query), False, None
+                try:
+                    return await invoke(), admission, None, True, None
+                except Exception as exc:
+                    # The provider call has started even though its result did
+                    # not arrive. Preserve that distinction from a pre-call
+                    # cancellation for call-waste telemetry.
+                    return [], admission, None, True, exc
+
             if self.evidence_lane is None:
-                return await invoke(), None
+                return await run_or_skip()
             async with self.evidence_lane.admit() as admission:
-                return await invoke(), admission
+                return await run_or_skip(admission)
 
         tasks = [
             search_one(int(candidate.policy.policy_id), query_by_policy[
@@ -174,14 +205,22 @@ class RecommendationService:
         evidences: list[EvidenceChunk] = []
         errors: list[str] = []
         admissions = []
+        skipped_searches: list[dict[str, Any]] = []
         for result in results:
             if isinstance(result, BaseException):
                 errors.append(str(result))
                 continue
-            chunks, admission = result
-            evidences.extend(chunks)
+            chunks, admission, skipped_search, provider_call_started, search_error = result
+            if provider_call_started:
+                debug["search_call_count"] += 1
             if admission is not None:
                 admissions.append(admission)
+            if skipped_search is not None:
+                skipped_searches.append(skipped_search)
+            if search_error is not None:
+                errors.append(str(search_error))
+                continue
+            evidences.extend(chunks)
 
         evidences = self._deduplicate_evidences(evidences)
         debug["count_by_policy"] = {
@@ -196,7 +235,33 @@ class RecommendationService:
                 "queue_wait_p50_ms": round(statistics.median(waits), 3),
                 "queue_wait_p95_ms": round(max(waits), 3),
             }
+        if skipped_searches:
+            token_estimates = [
+                skipped["estimated_input_tokens"]
+                for skipped in skipped_searches
+                if skipped.get("estimated_input_tokens") is not None
+            ]
+            debug["avoided_call_count"] = len(skipped_searches)
+            debug["estimated_embedding_input_tokens_avoided"] = (
+                sum(token_estimates) if token_estimates else None
+            )
+            debug["token_estimate_model"] = "text-embedding-3-large"
         return evidences, "; ".join(errors) or None, debug
+
+    @staticmethod
+    def _skipped_search_usage(query: str) -> dict[str, int | None]:
+        """Estimate only the embedding input of a call that never started.
+
+        This is a tokenizer estimate for a prevented call, not provider-reported
+        usage or a monetary saving.
+        """
+        try:
+            import tiktoken
+
+            encoding = tiktoken.encoding_for_model("text-embedding-3-large")
+            return {"estimated_input_tokens": len(encoding.encode(query))}
+        except Exception:
+            return {"estimated_input_tokens": None}
 
     def _to_result_item(
         self,

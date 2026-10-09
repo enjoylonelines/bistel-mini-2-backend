@@ -48,7 +48,10 @@ from app.schemas.recommendation_rerank_schema import (
     LlmRecommendationItem,
     LlmRecommendationRerankResult,
 )
-from app.services.recommendation_rerank_service import RecommendationRerankService
+from app.services.recommendation_rerank_service import (
+    LlmInvocation,
+    RecommendationRerankService,
+)
 from app.services.recommendation_rerank_lane import ProcessLocalRerankLane
 
 
@@ -230,6 +233,7 @@ async def _persist_terminal(
     provider_token_usage_available = bool(
         summary.get("llm_provider_token_usage_available")
     )
+    provider_token_usage = summary.get("llm_provider_token_usage")
     async with AsyncSessionLocal() as db:
         request = await repository.find_by_id(db, "recommendation", request_id)
         if request is None:
@@ -251,6 +255,7 @@ async def _persist_terminal(
                 details={
                     "provider_call_count": provider_call_count,
                     "provider_token_usage_available": provider_token_usage_available,
+                    "provider_token_usage": provider_token_usage,
                 },
             )
             await db.commit()
@@ -279,6 +284,7 @@ async def _persist_terminal(
                 "llm_fallback_used": fallback_used,
                 "provider_call_count": provider_call_count,
                 "provider_token_usage_available": provider_token_usage_available,
+                "provider_token_usage": provider_token_usage,
             },
         )
         await db.commit()
@@ -347,7 +353,14 @@ async def _run_scenario(scenario: Scenario) -> dict[str, Any]:
             await asyncio.sleep(scenario.delay_seconds)
             if scenario.provider_error:
                 raise RuntimeError(scenario.provider_error)
-            return _provider_success()
+            return LlmInvocation(
+                result=_provider_success(),
+                provider_token_usage={
+                    "input_tokens": 120,
+                    "output_tokens": 45,
+                    "total_tokens": 165,
+                },
+            )
         finally:
             in_flight -= 1
 
@@ -386,6 +399,7 @@ async def _run_scenario(scenario: Scenario) -> dict[str, Any]:
             "elapsed_ms": elapsed_ms,
             "fallback_used": rerank_output.fallback_used,
             "fallback_error": rerank_output.error,
+            "provider_token_usage": rerank_output.provider_token_usage,
             "terminal_status": terminal_status,
             "durable_result_written": write_applied,
             "late_write_blocked": "LATE_WRITE_BLOCKED" in events,
@@ -462,7 +476,14 @@ async def _run_durable_queued_cancellation_probe() -> dict[str, Any]:
             if label == "first":
                 first_provider_started.set()
             await asyncio.sleep(0.03)
-            return _provider_success()
+            return LlmInvocation(
+                result=_provider_success(),
+                provider_token_usage={
+                    "input_tokens": 120,
+                    "output_tokens": 45,
+                    "total_tokens": 165,
+                },
+            )
 
         if label == "queued_cancel":
             queued_lane_requested.set()
@@ -601,13 +622,27 @@ async def _run_mixed_load_point(capacity: int) -> dict[str, Any]:
             if label == "augmented":
                 first_provider_started.set()
                 await asyncio.sleep(0.03)
-                return _provider_success()
+                return LlmInvocation(
+                    result=_provider_success(),
+                    provider_token_usage={
+                        "input_tokens": 120,
+                        "output_tokens": 45,
+                        "total_tokens": 165,
+                    },
+                )
             if label == "rate_limit":
                 await asyncio.sleep(0.03)
                 raise RuntimeError("429 controlled mixed-load rate limit")
             if label == "timeout":
                 await asyncio.sleep(0.03)
-                return _provider_success()
+                return LlmInvocation(
+                    result=_provider_success(),
+                    provider_token_usage={
+                        "input_tokens": 120,
+                        "output_tokens": 45,
+                        "total_tokens": 165,
+                    },
+                )
             raise AssertionError("queued cancellation must not call the provider")
 
         timeout_seconds = 0.003 if label == "timeout" else 0.1
@@ -652,6 +687,7 @@ async def _run_mixed_load_point(capacity: int) -> dict[str, Any]:
             "provider_calls": row["provider_calls"],
             "fallback_used": bool(summary.get("llm_fallback_used")),
             "fallback_error": summary.get("llm_error"),
+            "provider_token_usage": summary.get("llm_provider_token_usage"),
             "skipped_due_to_cancellation": bool(
                 summary.get("llm_skipped_due_to_cancellation")
             ),

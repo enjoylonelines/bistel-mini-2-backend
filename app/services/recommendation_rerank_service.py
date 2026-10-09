@@ -3,7 +3,7 @@ import copy
 import json
 import logging
 from dataclasses import dataclass
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
 from app.common.ai_status import AssessmentStatus
@@ -40,6 +40,13 @@ class RecommendationRerankOutput:
     error: str | None = None
     provider_call_count: int = 0
     provider_token_usage_available: bool = False
+    provider_token_usage: dict[str, int] | None = None
+
+
+@dataclass(frozen=True)
+class LlmInvocation:
+    result: LlmRecommendationRerankResult
+    provider_token_usage: dict[str, int] | None = None
 
 
 class RecommendationRerankService:
@@ -49,7 +56,11 @@ class RecommendationRerankService:
         timeout_seconds: float = 180,
         llm_invoker: Callable[
             [list[tuple[str, str]]],
-            Awaitable[LlmRecommendationRerankResult | dict[str, Any]],
+            Awaitable[
+                LlmRecommendationRerankResult
+                | dict[str, Any]
+                | LlmInvocation
+            ],
         ]
         | None = None,
     ) -> None:
@@ -130,14 +141,14 @@ class RecommendationRerankService:
         provider_call_count = 0
         try:
             provider_call_count = 1
-            llm_result = await self._call_llm(
+            invocation = await self._call_llm(
                 merged_condition_json=merged_condition_json,
                 candidate_items=candidate_items,
                 result_limit=result_limit,
                 user_context=user_context,
             )
             sanitized = self._sanitize_llm_result(
-                llm_result,
+                invocation.result,
                 candidate_items,
                 result_limit,
             )
@@ -147,12 +158,14 @@ class RecommendationRerankService:
                     result_limit,
                     "LLM rerank returned no valid recommendations",
                     provider_call_count=provider_call_count,
+                    provider_token_usage=invocation.provider_token_usage,
                 )
             return self._apply_llm_result(
                 base_result_json=base_result_json,
                 llm_result=sanitized,
                 result_limit=result_limit,
                 provider_call_count=provider_call_count,
+                provider_token_usage=invocation.provider_token_usage,
             )
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"
@@ -175,7 +188,7 @@ class RecommendationRerankService:
         candidate_items: list[dict[str, Any]],
         result_limit: int,
         user_context: dict[str, Any] | None = None,
-    ) -> LlmRecommendationRerankResult:
+    ) -> LlmInvocation:
         messages = [
             (
                 "system",
@@ -318,17 +331,76 @@ class RecommendationRerankService:
             if settings.openai_api_key:
                 llm_kwargs["api_key"] = settings.openai_api_key
             structured_llm = ChatOpenAI(**llm_kwargs).with_structured_output(
-                LlmRecommendationRerankResult
+                LlmRecommendationRerankResult,
+                include_raw=True,
             )
             result = await asyncio.wait_for(
                 structured_llm.ainvoke(messages),
                 timeout=self.timeout_seconds,
             )
-        if isinstance(result, LlmRecommendationRerankResult):
+            if not isinstance(result, Mapping):
+                raise ValueError("LLM rerank raw response did not match schema")
+            parsed = result.get("parsed")
+            if not isinstance(parsed, LlmRecommendationRerankResult):
+                raise ValueError("LLM rerank response did not match schema")
+            return LlmInvocation(
+                result=parsed,
+                provider_token_usage=self._extract_provider_token_usage(
+                    result.get("raw")
+                ),
+            )
+        if isinstance(result, LlmInvocation):
             return result
+        if isinstance(result, Mapping) and "result" in result:
+            parsed = result.get("result")
+            if isinstance(parsed, dict):
+                parsed = LlmRecommendationRerankResult.model_validate(parsed)
+            if not isinstance(parsed, LlmRecommendationRerankResult):
+                raise ValueError("LLM rerank response did not match schema")
+            return LlmInvocation(
+                result=parsed,
+                provider_token_usage=self._normalize_provider_token_usage(
+                    result.get("provider_token_usage")
+                ),
+            )
+        if isinstance(result, LlmRecommendationRerankResult):
+            return LlmInvocation(result=result)
         if isinstance(result, dict):
-            return LlmRecommendationRerankResult.model_validate(result)
+            return LlmInvocation(
+                result=LlmRecommendationRerankResult.model_validate(result)
+            )
         raise ValueError("LLM rerank response did not match schema")
+
+    @classmethod
+    def _extract_provider_token_usage(cls, raw_response: Any) -> dict[str, int] | None:
+        usage = getattr(raw_response, "usage_metadata", None)
+        if usage is None:
+            response_metadata = getattr(raw_response, "response_metadata", None)
+            if isinstance(response_metadata, Mapping):
+                usage = response_metadata.get("token_usage")
+        return cls._normalize_provider_token_usage(usage)
+
+    @staticmethod
+    def _normalize_provider_token_usage(value: Any) -> dict[str, int] | None:
+        if not isinstance(value, Mapping):
+            return None
+        aliases = {
+            "input_tokens": ("input_tokens", "prompt_tokens"),
+            "output_tokens": ("output_tokens", "completion_tokens"),
+            "total_tokens": ("total_tokens",),
+        }
+        normalized: dict[str, int] = {}
+        for target, keys in aliases.items():
+            raw_value = next(
+                (value.get(key) for key in keys if value.get(key) is not None),
+                None,
+            )
+            try:
+                if raw_value is not None:
+                    normalized[target] = int(raw_value)
+            except (TypeError, ValueError):
+                continue
+        return normalized or None
 
     def _sanitize_llm_result(
         self,
@@ -432,6 +504,7 @@ class RecommendationRerankService:
         llm_result: LlmRecommendationRerankResult,
         result_limit: int,
         provider_call_count: int,
+        provider_token_usage: dict[str, int] | None = None,
     ) -> RecommendationRerankOutput:
         result_json = copy.deepcopy(base_result_json)
         base_results = self._base_results(result_json)
@@ -554,7 +627,8 @@ class RecommendationRerankService:
                 "llm_candidate_pool_count": len(base_results),
                 "priority_scoring_used": True,
                 "llm_provider_call_count": provider_call_count,
-                "llm_provider_token_usage_available": False,
+                "llm_provider_token_usage_available": provider_token_usage is not None,
+                "llm_provider_token_usage": provider_token_usage,
             }
         )
         result_json["results"] = final_results
@@ -567,6 +641,8 @@ class RecommendationRerankService:
             fallback_used=False,
             error=None,
             provider_call_count=provider_call_count,
+            provider_token_usage_available=provider_token_usage is not None,
+            provider_token_usage=provider_token_usage,
         )
 
     def _demote_follow_up_denial_conflicts(
@@ -793,6 +869,7 @@ class RecommendationRerankService:
         result_limit: int,
         error: str,
         provider_call_count: int = 0,
+        provider_token_usage: dict[str, int] | None = None,
     ) -> RecommendationRerankOutput:
         result_json = copy.deepcopy(base_result_json)
         fallback_results = self._demote_follow_up_denial_conflicts(
@@ -813,7 +890,8 @@ class RecommendationRerankService:
                 "llm_error": error,
                 "priority_scoring_used": True,
                 "llm_provider_call_count": provider_call_count,
-                "llm_provider_token_usage_available": False,
+                "llm_provider_token_usage_available": provider_token_usage is not None,
+                "llm_provider_token_usage": provider_token_usage,
             }
         )
         result_json["results"] = fallback_results
@@ -826,6 +904,8 @@ class RecommendationRerankService:
             fallback_used=True,
             error=error,
             provider_call_count=provider_call_count,
+            provider_token_usage_available=provider_token_usage is not None,
+            provider_token_usage=provider_token_usage,
         )
 
     def _candidate_items(

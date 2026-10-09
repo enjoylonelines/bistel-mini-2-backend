@@ -118,6 +118,59 @@ async def _measure(
     }
 
 
+async def _run_queued_cancellation_probe() -> dict[str, Any]:
+    """Cancel after one fake search starts and remaining work is lane-queued.
+
+    The service receives the same execution-activity callback supplied by the
+    graph node in production. This narrow probe keeps that callback in-process;
+    durable repository integration is covered by the graph-node regression.
+    """
+    active = True
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+    provider_calls = 0
+
+    async def fake_chunk_searcher(**_kwargs: Any) -> list[Any]:
+        nonlocal provider_calls
+        provider_calls += 1
+        first_started.set()
+        await release_first.wait()
+        return []
+
+    async def execution_is_active() -> bool:
+        return active
+
+    service = RecommendationService(
+        chunk_searcher=fake_chunk_searcher,
+        evidence_timeout_seconds=5,
+        evidence_lane=ProcessLocalEvidenceLane(1),
+    )
+    search_task = asyncio.create_task(
+        service._search_evidences(
+            condition={"stage": "controlled", "needs": ["cancellation"]},
+            candidates=_candidates(4),
+            execution_is_active=execution_is_active,
+        )
+    )
+    await first_started.wait()
+    active = False
+    release_first.set()
+    evidences, error, debug = await search_task
+    return {
+        "scope": "in-process fake search and execution callback; no provider or database",
+        "lane_capacity": 1,
+        "candidate_count": 4,
+        "provider_calls_started": provider_calls,
+        "avoided_calls": debug["avoided_call_count"],
+        "estimated_embedding_input_tokens_avoided": debug[
+            "estimated_embedding_input_tokens_avoided"
+        ],
+        "token_estimate_model": debug["token_estimate_model"],
+        "returned_evidence_count": len(evidences),
+        "error": error,
+    }
+
+
 async def main(args: argparse.Namespace) -> dict[str, Any]:
     modes = [None, 1, 2]
     return {
@@ -137,6 +190,7 @@ async def main(args: argparse.Namespace) -> dict[str, Any]:
             )
             for capacity in modes
         ],
+        "queued_cancellation_probe": await _run_queued_cancellation_probe(),
     }
 
 

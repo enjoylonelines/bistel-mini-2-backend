@@ -142,3 +142,61 @@ def test_lane_drops_cancelled_request_before_provider_call() -> None:
         "RERANK_ADMITTED",
         "RERANK_DROPPED",
     ]
+
+
+def test_build_result_records_rag_call_avoidance_after_durable_cancellation() -> None:
+    events: list[dict[str, object]] = []
+
+    class FakeRerankService:
+        def select_candidate_pool(self, **kwargs):
+            return []
+
+    class FakeRecommendationService:
+        result_limit = 1
+
+        async def build_result(self, **kwargs):
+            assert await kwargs["execution_is_active"]() is False
+            return {
+                "results": [],
+                "summary": {
+                    "evidence_search_avoided_call_count": 2,
+                    "evidence_estimated_embedding_input_tokens_avoided": 37,
+                    "evidence_token_estimate_model": "text-embedding-3-large",
+                },
+            }
+
+    class FakeEventRepository:
+        async def record(self, db, **event):
+            events.append(event)
+
+    class CancelledRequestRepository:
+        async def has_active_recommendation_execution(self, db, request_id, execution_token):
+            return False
+
+    nodes = RecommendationGraphNodes(
+        recommendation_service=FakeRecommendationService(),
+        rerank_service=FakeRerankService(),
+        execution_event_repository=FakeEventRepository(),
+        request_repository=CancelledRequestRepository(),
+    )
+
+    result = asyncio.run(
+        nodes.build_result(
+            {
+                "db": SimpleNamespace(),
+                "request_id": 23,
+                "execution_token": "cancelled-owner",
+                "merged_condition_json": {},
+                "candidates": [],
+                "assessments": [],
+            }
+        )
+    )
+
+    assert result["result_json"]["summary"]["evidence_search_avoided_call_count"] == 2
+    assert [event["event_type"] for event in events] == ["RAG_EVIDENCE_DROPPED"]
+    details = events[0]["details"]
+    assert isinstance(details, dict)
+    assert details["provider_call_count"] == 0
+    assert details["avoided_call_count"] == 2
+    assert details["estimated_embedding_input_tokens_avoided"] == 37
