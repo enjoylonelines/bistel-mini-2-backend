@@ -125,7 +125,7 @@ class PolicyDocumentService:
                         section_documents
                     )
                     async with conn.transaction():
-                        document_id = (
+                        document_id, superseded_document_ids = (
                             await PolicyDocumentRepository.upsert_policy_detail_document(
                                 conn=conn,
                                 policy_id=source["policy_id"],
@@ -137,6 +137,11 @@ class PolicyDocumentService:
                                 raw_text=raw_text,
                             )
                         )
+                        for superseded_document_id in superseded_document_ids:
+                            await PolicyDocumentRepository.delete_policy_detail_embeddings_for_document(
+                                conn=conn,
+                                document_id=superseded_document_id,
+                            )
                         deleted_embedding_count = (
                             await PolicyDocumentRepository.delete_policy_detail_embeddings_for_document(
                                 conn=conn,

@@ -1,4 +1,5 @@
 import json
+from hashlib import md5
 from typing import Any
 
 from langchain_core.documents import Document
@@ -191,19 +192,67 @@ class PolicyDocumentRepository:
         source_title: str,
         source_url: str | None,
         raw_text: str,
-    ) -> int:
-        document_id = policy_id * 10000 + 9000
+    ) -> tuple[int, list[int]]:
+        """Create a content-versioned POLICY_DETAIL document.
+
+        Detail documents are evidence records.  Rebuilding them must not
+        overwrite the chunks that historical chat messages reference.  A new
+        content fingerprint therefore supersedes the current version and gets
+        a database-assigned document id; an unchanged fingerprint reuses its
+        current version.
+        """
+        content_hash = md5(raw_text.encode("utf-8")).hexdigest()
+        source_fingerprint = md5(
+            "|".join(
+                (
+                    str(policy_id),
+                    "POLICY_DETAIL",
+                    source_url or "",
+                    source_title,
+                    content_hash,
+                )
+            ).encode("utf-8")
+        ).hexdigest()
         async with conn.cursor() as cur:
             await cur.execute(
                 """
+                    SELECT document_id
+                    FROM policy_document
+                    WHERE policy_id = %s
+                      AND source_type = 'POLICY_DETAIL'
+                      AND is_current = TRUE
+                      AND source_fingerprint IS DISTINCT FROM %s
+                    FOR UPDATE
+                """,
+                (policy_id, source_fingerprint),
+            )
+            superseded_document_ids = [int(row[0]) for row in await cur.fetchall()]
+
+            if superseded_document_ids:
+                await cur.execute(
+                    """
+                        UPDATE policy_document
+                        SET is_current = FALSE,
+                            superseded_at = CURRENT_TIMESTAMP,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE document_id = ANY(%s)
+                    """,
+                    (superseded_document_ids,),
+                )
+
+            await cur.execute(
+                """
                     INSERT INTO policy_document (
-                        document_id,
                         policy_id,
                         condition_profile_id,
                         source_title,
                         source_url,
                         source_type,
                         raw_text,
+                        source_fingerprint,
+                        content_hash,
+                        ingest_status,
+                        is_current,
                         updated_at
                     )
                     VALUES (
@@ -211,32 +260,39 @@ class PolicyDocumentRepository:
                         %s,
                         %s,
                         %s,
-                        %s,
                         'POLICY_DETAIL',
                         %s,
+                        %s,
+                        %s,
+                        'TEXT_READY',
+                        TRUE,
                         CURRENT_TIMESTAMP
                     )
-                    ON CONFLICT (document_id) DO UPDATE SET
-                        policy_id = EXCLUDED.policy_id,
+                    ON CONFLICT (policy_id, source_fingerprint) WHERE is_current
+                    DO UPDATE SET
                         condition_profile_id = EXCLUDED.condition_profile_id,
                         source_title = EXCLUDED.source_title,
                         source_url = EXCLUDED.source_url,
-                        source_type = EXCLUDED.source_type,
                         raw_text = EXCLUDED.raw_text,
+                        content_hash = EXCLUDED.content_hash,
+                        ingest_status = 'TEXT_READY',
+                        ingest_error = NULL,
+                        embedded_metadata_version = NULL,
                         updated_at = CURRENT_TIMESTAMP
                     RETURNING document_id
                 """,
                 (
-                    document_id,
                     policy_id,
                     condition_profile_id,
                     source_title,
                     source_url,
                     raw_text,
+                    source_fingerprint,
+                    content_hash,
                 ),
             )
             row = await cur.fetchone()
-        return int(row[0])
+        return int(row[0]), superseded_document_ids
 
     @staticmethod
     async def delete_policy_detail_embeddings_for_document(

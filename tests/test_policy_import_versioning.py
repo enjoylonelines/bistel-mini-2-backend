@@ -27,6 +27,8 @@ class _RecordingCursor:
         return self._rows.pop(0) if self._rows else (0,)
 
     async def fetchall(self):
+        if self._rows and isinstance(self._rows[0], list):
+            return self._rows.pop(0)
         return []
 
 
@@ -85,6 +87,29 @@ def test_embedding_targets_exclude_superseded_documents() -> None:
     asyncio.run(PolicyRagRepository.find_embedding_targets(conn, limit=10))
 
     assert "AND d.is_current = TRUE" in conn.cursor_instance.queries[-1]
+
+
+def test_detail_document_versions_content_without_reusing_fixture_ids() -> None:
+    conn = _RecordingConnection(rows=[[(242900000,)], (17,)])
+
+    document_id, superseded_document_ids = asyncio.run(
+        PolicyDocumentRepository.upsert_policy_detail_document(
+            conn=conn,
+            policy_id=242,
+            condition_profile_id=1,
+            source_title="무료법률상담",
+            source_url="https://www.klac.or.kr/",
+            raw_text="공식 상세 원문",
+        )
+    )
+
+    queries = "\n".join(conn.cursor_instance.queries)
+    assert document_id == 17
+    assert superseded_document_ids == [242900000]
+    assert "source_fingerprint IS DISTINCT FROM %s" in queries
+    assert "SET is_current = FALSE" in queries
+    assert "ON CONFLICT (policy_id, source_fingerprint) WHERE is_current" in queries
+    assert "document_id," not in conn.cursor_instance.queries[-1]
 
 
 def test_embedding_completion_marks_only_affected_documents() -> None:
