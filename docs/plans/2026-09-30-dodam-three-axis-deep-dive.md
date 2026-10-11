@@ -1276,3 +1276,21 @@ calls `1`, provider-reported tokens `3,657 input / 814 output / 4,471 total`을
 root/retriever/generation trace도 확인했다. lane을 설정하지 않아 avoided calls는 `0`,
 queue wait/in-flight은 미측정이다. 이 한 건은 percentile·품질·실제 청구비용·용량·global
 concurrency 증거가 아니다.
+
+### Fixed-fixture distribution receipt (2026-10-11)
+
+명시적 provider-call 승인 뒤 disposable `dodam_e2e`와 fresh local application에서
+같은 비개인 법률지원 fixture를 sequential로 반복했다. `COMPLETED` 및 successful rerank
+조건을 만족한 20건만 집계했다. stored request elapsed
+(`recommendation_request.updated_at - created_at`)는 p50 `1,122.662 ms`, p95
+`1,654.832 ms`, max `1,992.987 ms`였다. 결과는 40건, RAG search/chunk는 `40/80`,
+rerank provider call은 20회, fallback/recorded LLM error는 `0/0`이었다.
+provider-reported token은 input/output/total `75,880/17,489/93,369`, 요청별 total
+token p50/p95 `4,673.5/4,747.1`이다.
+
+이는 initial condition pass 및 fixed answer submission을 포함하는 local sequential
+stored-row duration이지 provider-only latency가 아니다. token은 provider usage이며
+invoice/cost로 환산하지 않았다. answer 뒤 `PROCESSING`에 남아 취소한 요청 1건과 invalid
+stage/child-age로 `FOLLOW_UP_REQUIRED`가 된 probe 1건은 성공·fallback 집계에서 제외했다.
+lane/retry counter/queue wait/in-flight/concurrent load/multi-worker/global limiter가
+없으므로 capacity·SLO·retry·production cost 증거가 아니다.
