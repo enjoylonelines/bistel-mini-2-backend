@@ -1,3 +1,6 @@
+from collections.abc import Callable
+from typing import Any
+
 from app.ai.states.recommendation_state import RecommendationGraphState
 from app.ai.utils.progress import progress_node
 from app.repositories.policy_assessment_repository import PolicyAssessmentRepository
@@ -6,6 +9,7 @@ from app.repositories.recommendation_execution_event_repository import (
     RecommendationExecutionEventRepository,
 )
 from app.core.config import settings
+from app.db.session import AsyncSessionLocal
 from app.services.recommendation_assessment_service import RecommendationAssessmentService
 from app.services.recommendation_candidate_service import RecommendationCandidateService
 from app.services.recommendation_rerank_service import RecommendationRerankService
@@ -27,6 +31,7 @@ class RecommendationGraphNodes:
         rerank_lane: ProcessLocalRerankLane | None = None,
         execution_event_repository: RecommendationExecutionEventRepository | None = None,
         request_repository: AiRequestRepository | None = None,
+        execution_session_factory: Callable[[], Any] | None = None,
     ) -> None:
         self.candidate_service = candidate_service or RecommendationCandidateService()
         self.recommendation_service = recommendation_service or RecommendationService()
@@ -46,6 +51,9 @@ class RecommendationGraphNodes:
             execution_event_repository or RecommendationExecutionEventRepository()
         )
         self.request_repository = request_repository or AiRequestRepository()
+        # Fan-out evidence tasks must never concurrently execute ownership
+        # reads through the graph's request/write session.
+        self.execution_session_factory = execution_session_factory or AsyncSessionLocal
 
     @progress_node("recommendation", "candidate_search")
     async def candidate_search(
@@ -138,10 +146,8 @@ class RecommendationGraphNodes:
             selected_candidates=rerank_candidates,
             assessments=state.get("assessments", []),
             execution_is_active=(
-                lambda: self.request_repository.has_active_recommendation_execution(
-                    state["db"],
-                    state["request_id"],
-                    state.get("execution_token"),
+                lambda: self._has_active_execution(
+                    state["request_id"], state.get("execution_token")
                 )
                 if state.get("execution_token")
                 else None
@@ -177,6 +183,19 @@ class RecommendationGraphNodes:
             "base_result_json": result_json,
             "result_json": result_json,
         }
+
+    async def _has_active_execution(
+        self,
+        request_id: int,
+        execution_token: str | None,
+    ) -> bool:
+        """Read durable ownership in a session isolated from RAG fan-out."""
+        async with self.execution_session_factory() as execution_db:
+            return await self.request_repository.has_active_recommendation_execution(
+                execution_db,
+                request_id,
+                execution_token,
+            )
 
     @progress_node("recommendation", "llm_rerank")
     async def llm_rerank(

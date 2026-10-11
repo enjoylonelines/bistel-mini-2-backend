@@ -38,6 +38,9 @@ from app.services.ai_request_lifecycle_service import RequestExecutionOwnershipL
 from app.services.recommendation_langfuse_telemetry import (
     recommendation_langfuse_telemetry,
 )
+from app.services.recommendation_execution_outcome import (
+    record_recommendation_lifecycle_outcome,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -103,34 +106,21 @@ async def run_recommendation_lifecycle(
                     timeout=_RECOMMEND_LIFECYCLE_TIMEOUT_SECONDS,
                 )
                 summary = snapshot.result_json.get("summary") or {}
-                fallback_used = bool(summary.get("llm_fallback_used"))
-                await lifecycle.record_recommendation_execution_event(
+                outcome = await record_recommendation_lifecycle_outcome(
+                    lifecycle,
                     db,
                     request_id=request_id,
-                    event_type="EXECUTION_TERMINAL",
-                    stage="RERANK",
                     execution_token=execution_token,
-                    outcome="FALLBACK" if fallback_used else "AUGMENTED",
-                    error_type=(
-                        str(summary.get("llm_error") or "").split(":", 1)[0]
-                        or None
-                    ),
-                    details={
-                        "llm_fallback_used": fallback_used,
-                        "provider_call_count": int(
-                            summary.get("llm_provider_call_count") or 0
-                        ),
-                        "provider_token_usage_available": bool(
-                            summary.get("llm_provider_token_usage_available")
-                        ),
-                    },
+                    status=snapshot.status,
+                    summary=summary,
                 )
                 await db.commit()
-                recommendation_langfuse_telemetry.emit_completed(
-                    request_id=request_id,
-                    summary=summary,
-                    elapsed_ms=(time.perf_counter() - execution_started_at) * 1000,
-                )
+                if outcome and outcome.emit_completed_telemetry:
+                    recommendation_langfuse_telemetry.emit_completed(
+                        request_id=request_id,
+                        summary=summary,
+                        elapsed_ms=(time.perf_counter() - execution_started_at) * 1000,
+                    )
                 return snapshot, None
             except Exception:
                 await db.rollback()

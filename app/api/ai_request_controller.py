@@ -32,6 +32,9 @@ from app.services.chat.chat_service import ChatService
 from app.services.recommendation_langfuse_telemetry import (
     recommendation_langfuse_telemetry,
 )
+from app.services.recommendation_execution_outcome import (
+    record_recommendation_lifecycle_outcome,
+)
 
 
 # AI 단계(파싱·판정·리랭크)가 충분히 생각할 수 있도록 넉넉하게 둔다.
@@ -141,30 +144,16 @@ async def process_ai_condition_request(request_type: str, request_id: int) -> No
                 )
                 if request_type == "recommendation":
                     summary = snapshot.result_json.get("summary") or {}
-                    fallback_used = bool(summary.get("llm_fallback_used"))
-                    await service.record_recommendation_execution_event(
+                    outcome = await record_recommendation_lifecycle_outcome(
+                        service,
                         db,
                         request_id=request_id,
-                        event_type="EXECUTION_TERMINAL",
-                        stage="RERANK",
                         execution_token=execution_token,
-                        outcome="FALLBACK" if fallback_used else "AUGMENTED",
-                        error_type=(
-                            str(summary.get("llm_error") or "").split(":", 1)[0]
-                            or None
-                        ),
-                        details={
-                            "llm_fallback_used": fallback_used,
-                            "provider_call_count": int(
-                                summary.get("llm_provider_call_count") or 0
-                            ),
-                            "provider_token_usage_available": bool(
-                                summary.get("llm_provider_token_usage_available")
-                            ),
-                        },
+                        status=snapshot.status,
+                        summary=summary,
                     )
                 await db.commit()
-                if request_type == "recommendation":
+                if request_type == "recommendation" and outcome and outcome.emit_completed_telemetry:
                     recommendation_langfuse_telemetry.emit_completed(
                         request_id=request_id,
                         summary=summary,
@@ -586,34 +575,21 @@ async def _recommendation_sse_stream(
                         timeout=AI_BACKGROUND_TIMEOUT_SECONDS,
                     )
                     summary = completed.result_json.get("summary") or {}
-                    fallback_used = bool(summary.get("llm_fallback_used"))
-                    await service.record_recommendation_execution_event(
+                    outcome = await record_recommendation_lifecycle_outcome(
+                        service,
                         inner_db,
                         request_id=int(snapshot.request_id),
-                        event_type="EXECUTION_TERMINAL",
-                        stage="RERANK",
                         execution_token=execution_token,
-                        outcome="FALLBACK" if fallback_used else "AUGMENTED",
-                        error_type=(
-                            str(summary.get("llm_error") or "").split(":", 1)[0]
-                            or None
-                        ),
-                        details={
-                            "llm_fallback_used": fallback_used,
-                            "provider_call_count": int(
-                                summary.get("llm_provider_call_count") or 0
-                            ),
-                            "provider_token_usage_available": bool(
-                                summary.get("llm_provider_token_usage_available")
-                            ),
-                        },
+                        status=completed.status,
+                        summary=summary,
                     )
                     await inner_db.commit()
-                    recommendation_langfuse_telemetry.emit_completed(
-                        request_id=int(snapshot.request_id),
-                        summary=summary,
-                        elapsed_ms=(time.perf_counter() - execution_started_at) * 1000,
-                    )
+                    if outcome and outcome.emit_completed_telemetry:
+                        recommendation_langfuse_telemetry.emit_completed(
+                            request_id=int(snapshot.request_id),
+                            summary=summary,
+                            elapsed_ms=(time.perf_counter() - execution_started_at) * 1000,
+                        )
                     result = await service.get_recommendation_polling_result(
                         db=inner_db,
                         request_id=int(snapshot.request_id),
