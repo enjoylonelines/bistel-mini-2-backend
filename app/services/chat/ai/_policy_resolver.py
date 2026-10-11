@@ -115,6 +115,48 @@ def _collect_recent_policy_candidates(
     ]
 
 
+async def _find_explicit_policy_name_matches(
+    user_content: str,
+) -> list[tuple[str, str | None]]:
+    """사용자가 문장 안에 명시한 활성 정책명을 직접 찾는다.
+
+    신청 의도는 대상 정책이 정해져야만 신청 준비 카드로 이어진다. RAG 청크가
+    아직 없거나 검색에서 누락돼도, 정책명이 문장에 그대로 있으면 이 경로로
+    대상을 확정한다. 둘 이상의 정책명이 매칭되면 호출자가 선택을 요구한다.
+    """
+    normalized_content = re.sub(r"\s+", "", user_content or "")
+    if len(normalized_content) < 4:
+        return []
+
+    try:
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                text(
+                    """
+                    SELECT policy_code AS slug, policy_name
+                    FROM policy
+                    WHERE is_active = TRUE
+                      AND char_length(regexp_replace(policy_name, '\\s+', '', 'g')) >= 4
+                      AND position(
+                        regexp_replace(policy_name, '\\s+', '', 'g')
+                        IN :normalized_content
+                      ) > 0
+                    ORDER BY char_length(policy_name) DESC, policy_code
+                    LIMIT 2
+                    """
+                ),
+                {"normalized_content": normalized_content},
+            )
+            return [
+                (str(row["slug"]), row["policy_name"] or None)
+                for row in result.mappings().all()
+                if row["slug"]
+            ]
+    except Exception:
+        logger.exception("explicit policy-name lookup failed")
+        return []
+
+
 def _is_contextual_single_policy_request(intent: Intent, user_content: str) -> bool:
     if intent in ("summary", "policy_summary"):
         return any(token in user_content for token in ("요약", "정리", "뭐야", "무엇"))
@@ -286,6 +328,17 @@ async def resolve_single_policy_target(
     ).get("kind") == "clarification"
 
     policies, evidences = await rag_lookup(state["user_content"])
+    explicit_name_matches = await _find_explicit_policy_name_matches(
+        state["user_content"]
+    )
+    if len(explicit_name_matches) == 1:
+        slug, policy_name = explicit_name_matches[0]
+        logger.info(
+            "chat_explicit_policy_name_resolved",
+            extra={"intent": intent, "rag_candidate_count": len(policies)},
+        )
+        return slug, policy_name, evidences, []
+
     slug, policy_name = _pick_apply_target(
         policies,
         user_content=state["user_content"],

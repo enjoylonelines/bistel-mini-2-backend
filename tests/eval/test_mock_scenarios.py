@@ -1229,6 +1229,27 @@ class TestPayloadBuilder:
         result = asyncio.run(build_assistant_payload(state))
 
         assert result["assistant_payload"]["apply_card"] == card
+        assert result["assistant_payload"]["actions"] == ["apply"]
+
+    def test_apply_without_resolved_policy_hides_checklist_action(self) -> None:
+        """정책 대상이 불명확하면 신청 카드와 CTA를 함께 숨긴다."""
+        from app.services.chat.handlers._payload_builders import build_assistant_payload
+
+        state: dict[str, Any] = {
+            "supervisor_decision": {"intent": "apply"},
+            "branch_content": "어떤 무료법률상담을 말씀하시는 건가요?",
+            "branch_policies": [],
+            "branch_evidences": [],
+            "branch_apply_card": None,
+            "branch_suggested_actions": [],
+            "slot_request": None,
+            "profile_confirm": None,
+        }
+
+        result = asyncio.run(build_assistant_payload(state))
+
+        assert result["assistant_payload"]["apply_card"] is None
+        assert result["assistant_payload"]["actions"] == []
 
     def test_suggested_actions_from_state(self) -> None:
         """branch_suggested_actions → payload.suggested_actions 전달"""

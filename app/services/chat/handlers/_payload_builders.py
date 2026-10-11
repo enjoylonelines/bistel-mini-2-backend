@@ -24,6 +24,12 @@ async def build_assistant_payload(
     profile_confirm = state.get("profile_confirm")
     is_prompt = bool(slot_request or profile_confirm)
     api_action = None if is_prompt else _INTENT_TO_API_ACTION.get(intent)
+    # `apply` CTA는 실제 신청 준비 카드가 만들어진 경우에만 노출한다.
+    # 대상 정책을 특정하지 못한 fallback/명확화 응답에서 이 액션을 그대로
+    # 내보내면 프론트가 정책 목록으로 이동시키면서 "체크리스트"라고
+    # 잘못 약속하게 된다.
+    if intent == "apply" and not state.get("branch_apply_card"):
+        api_action = None
     content = state.get("branch_content") or ""
     disclaimer = False
     evidence_review = state.get("evidence_review") or review_evidence_completeness(state)
