@@ -11,6 +11,7 @@ from app.db.session import vector_engine
 from app.repositories.policy_rag_repository import PolicyRagRepository
 from app.repositories.policy_rag_repository import POLICY_RAG_METADATA_VERSION
 from app.repositories.evidence_trace_repository import EvidenceTraceRepository
+from app.services.policy_rag_query import expand_policy_retrieval_query
 from app.schemas.policy_rag_schema import (
     PolicyRagEmbeddingItem,
     PolicyRagEmbeddingResponse,
@@ -120,7 +121,7 @@ class PolicyRagService:
     ) -> PolicyRagSearchResponse:
         filter_value = self._search_filter(source_type, policy_ids)
         results = await self._vectorstore().asimilarity_search_with_score(
-            query=query,
+            query=expand_policy_retrieval_query(query),
             k=k,
             filter=filter_value,
         )

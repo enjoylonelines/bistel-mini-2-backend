@@ -26,6 +26,13 @@ SECTION_BY_SUBTYPE = {
     "APPLICATION_PERIOD": "신청 기간",
 }
 
+SEMANTIC_SECTION_BY_HINT = {
+    "TARGET": "TARGET",
+    "BENEFIT": "BENEFIT",
+    "APPLICATION_METHOD": "APPLICATION",
+    "APPLICATION_PERIOD": "APPLICATION",
+}
+
 _DOCUMENT_RE = re.compile(
     r"(서류|증빙|증빙자료|준비물|제출자료|제출\s*서류|구비서류)"
 )
@@ -36,6 +43,14 @@ _PERIOD_RE = re.compile(
 )
 _METHOD_RE = re.compile(
     r"(어디|어떤\s*기관|어떻게|신청|문의|온라인|주민센터|보건소|카드사|공단)"
+)
+_TARGET_RE = re.compile(
+    r"(누가\s*(?:받|신청|대상)|지원\s*대상|대상자는?|받을\s*수\s*있|"
+    r"자격|선정\s*기준|해당(?:되나요|하나요)?)"
+)
+_BENEFIT_RE = re.compile(
+    r"(지원\s*내용|무엇(?:을|이)\s*지원|어떤\s*(?:도움|지원|혜택)|"
+    r"얼마(?:를|나)?\s*(?:지원|받)|지원금|급여)"
 )
 
 def infer_application_section_subtype(query: str) -> str | None:
@@ -49,30 +64,68 @@ def infer_application_section_subtype(query: str) -> str | None:
     return None
 
 
+def infer_section_hint(query: str) -> str | None:
+    """Infer an evidence section solely from wording in the user query.
+
+    This intentionally does not accept a gold-set axis or expected section. It
+    is a conservative ordering hint: ambiguous and document-oriented questions
+    keep the vector ranking unchanged.
+    """
+    normalized = " ".join(str(query or "").split())
+    if _DOCUMENT_RE.search(normalized):
+        return None
+    if _PERIOD_RE.search(normalized):
+        return "APPLICATION_PERIOD"
+    if _TARGET_RE.search(normalized):
+        return "TARGET"
+    if _BENEFIT_RE.search(normalized):
+        return "BENEFIT"
+    if _METHOD_RE.search(normalized):
+        return "APPLICATION_METHOD"
+    return None
+
+
+def _matches_section_hint(result: PolicyRagSearchResult, hint: str) -> bool:
+    target_section = SECTION_BY_SUBTYPE.get(hint)
+    if target_section is not None:
+        return result.section == target_section
+    semantic_section = SEMANTIC_SECTION_BY_HINT.get(hint)
+    return result.semantic_section == semantic_section
+
+
+def _order_section_aware_results(
+    results: Sequence[PolicyRagSearchResult],
+    *,
+    top_k: int,
+    section_hint: str | None,
+) -> list[PolicyRagSearchResult]:
+    """Promote a matching retrieved section without inventing a result.
+
+    The function only reorders the vector candidate pool. If no matching
+    section was retrieved, the original vector order remains intact.
+    """
+    visible = list(results[:top_k])
+    hint = str(section_hint or "").upper()
+    if not hint:
+        return visible
+
+    target = next((item for item in results if _matches_section_hint(item, hint)), None)
+    if target is None:
+        return visible
+    return [target, *(item for item in results if item is not target)][:top_k]
+
+
 def _select_section_aware_results(
     results: Sequence[PolicyRagSearchResult],
     *,
     top_k: int,
     section_subtype: str | None,
 ) -> list[PolicyRagSearchResult]:
-    visible = list(results[:top_k])
-    target_section = SECTION_BY_SUBTYPE.get(str(section_subtype or "").upper())
-    if target_section is None:
-        return visible
-
-    if any(result.section == target_section for result in visible):
-        return visible
-
-    target = next(
-        (result for result in results[top_k:] if result.section == target_section),
-        None,
+    return _order_section_aware_results(
+        results,
+        top_k=top_k,
+        section_hint=section_subtype,
     )
-    if target is None:
-        return visible
-
-    if not visible:
-        return [target]
-    return [*visible[:-1], target]
 
 
 async def search_policy_chunks(
@@ -85,8 +138,9 @@ async def search_policy_chunks(
     candidate_k: int | None = None,
 ) -> list[EvidenceChunk]:
     service = rag_service or PolicyRagService()
+    section_hint = section_subtype or infer_section_hint(query)
     requested_candidate_k = candidate_k or top_k
-    if section_subtype:
+    if section_hint:
         requested_candidate_k = max(requested_candidate_k, top_k, 7)
 
     response = await service.search(
@@ -97,7 +151,7 @@ async def search_policy_chunks(
     selected_results = _select_section_aware_results(
         response.results,
         top_k=top_k,
-        section_subtype=section_subtype,
+        section_subtype=section_hint,
     )
 
     allowed_policy_ids = {str(policy_id) for policy_id in policy_ids or []}

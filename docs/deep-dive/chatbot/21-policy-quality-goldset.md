@@ -26,6 +26,92 @@ PYTHONPATH=. .venv/bin/python experiments/chatbot/policy_quality_goldset.py
 Current result: 21 cases, all approved, and
 `ready_for_accuracy_reporting: true`.
 
+## First isolated corpus run
+
+On 2026-10-15, the seven source-mapped policies were rebuilt in an isolated
+local PostgreSQL/PGVector corpus. Each policy contributed exactly its official
+target, benefit, and application-method section (21 chunks total), embedded
+with the current application embedding configuration.
+
+The section evaluator filters each query to its reviewed expected policy. It
+measures section retrieval only; candidate-policy discovery is reported below
+as a separate unfiltered vector-retrieval measurement. Neither measures
+full-chat answer quality or a production latency SLO.
+
+| Metric | Result |
+| --- | ---: |
+| section hit@1 | 71.43% (15/21) |
+| section hit@3 | 100.00% (21/21) |
+| MRR | 0.8492 |
+| query p50 / p95 | 263.818ms / 965.007ms |
+
+The six not-top-1 cases were Q005, Q008, Q014, Q019, Q023, and Q027. They are
+the concrete improvement set for section metadata or section-aware ordering;
+the 100% hit@3 result alone does not justify claiming top-answer quality.
+
+## Query-only section-aware ordering comparison
+
+The six failures all had explicit query wording for one of three evidence
+sections: target eligibility, benefit content, or application method. The
+retrieval path now derives a conservative section hint from that wording and
+only promotes an already-retrieved matching section. It does not read the
+gold-set `quality_axis`, expected policy, or expected section to order results;
+ambiguous and document-oriented queries keep the vector order.
+
+| Metric | Vector baseline | Query-only ordering | Delta |
+| --- | ---: | ---: | ---: |
+| section hit@1 | 71.43% (15/21) | 100.00% (21/21) | +28.57pp |
+| section hit@3 | 100.00% (21/21) | 100.00% (21/21) | 0.00pp |
+| MRR | 0.8492 | 1.0000 | +0.1508 |
+
+This comparison uses one identical top-3 vector result per question, then
+applies an in-process ordering transform; it does not add a second provider
+call. The run observed query p50/p95 of 289.530ms / 692.924ms, but latency is
+an isolated local observation rather than a production SLO.
+
+The result is deliberately narrow: source-backed 21 questions across seven
+policies, with the expected policy already filtered. Because the set contains
+clear section-intent wording and is not a held-out production traffic sample,
+the 100% result is evidence of this ordering mechanism on this fixture, not a
+policy recommendation accuracy claim or a generalization claim. Candidate
+policy discovery is evaluated separately without `expected_policy_ids`.
+
+## Unfiltered candidate-policy discovery baseline
+
+For the same 21 questions, a separate search removed the expected-policy
+filter and retrieved all 21 chunks from the isolated seven-policy corpus. The
+first occurrence of each distinct policy is its candidate rank; this is a
+chunk-vector candidate baseline, not the application's full eligibility or
+recommendation pipeline.
+
+| Metric | Raw vector query | Curated alias expansion | Delta |
+| --- | ---: | ---: | ---: |
+| policy hit@1 | 85.71% (18/21) | 100.00% (21/21) | +14.29pp |
+| policy hit@3 | 100.00% (21/21) | 100.00% (21/21) | 0.00pp |
+| policy MRR | 0.9286 | 1.0000 | +0.0714 |
+
+The raw-vector top-1 misses were Q006, Q017, and Q027. Inspection showed a
+terminology gap rather than a missing chunk: `임신 준비 시술` does not name
+`난임치료 휴가`, while `신생아 목돈` does not name `출생아 첫만남 이용권`.
+The retrieval query now appends only those two reviewed, narrow aliases; the
+original user query remains the audit value. A query about newborn vaccination,
+for example, does not trigger the first-meeting voucher alias.
+
+This latest local run observed candidate query p50/p95 of 335.195ms / 441.562ms.
+There are no negative or abstention cases in this fixture, and the corpus has
+only the seven source-mapped target policies. Therefore this establishes a
+reproducible candidate-retrieval improvement on the fixture, not a claim that
+the service can safely recommend among the full policy universe or abstain on
+out-of-scope questions.
+
+Re-run the measurement only after rebuilding the isolated corpus from the
+current official source:
+
+```bash
+PYTHONPATH=. .venv/bin/python experiments/chatbot/bootstrap_policy_quality_corpus.py
+PYTHONPATH=. .venv/bin/python experiments/chatbot/evaluate_policy_quality_goldset.py
+```
+
 ### First source-backed approvals
 
 The local deep-dive database contained source detail only for policy 242

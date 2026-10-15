@@ -1,6 +1,7 @@
 import asyncio
 from app.ai.tools.policy_chunk_search_tool import (
     _select_section_aware_results,
+    infer_section_hint,
     infer_application_section_subtype,
     search_policy_chunks,
 )
@@ -50,6 +51,14 @@ def test_infer_application_section_subtype_ignores_non_application_period_word()
     )
 
 
+def test_infer_section_hint_uses_query_wording_not_gold_labels() -> None:
+    assert infer_section_hint("누가 받을 수 있나요?") == "TARGET"
+    assert infer_section_hint("이 제도는 어떤 도움을 주나요?") == "BENEFIT"
+    assert infer_section_hint("온라인으로 어디에서 신청하나요?") == "APPLICATION_METHOD"
+    assert infer_section_hint("신청 기간은 언제까지인가요?") == "APPLICATION_PERIOD"
+    assert infer_section_hint("신청할 때 필요한 서류가 있나요?") is None
+
+
 def test_section_aware_selection_guarantees_target_from_larger_pool() -> None:
     results = [
         _result(1, "조건 구조"),
@@ -69,11 +78,11 @@ def test_section_aware_selection_guarantees_target_from_larger_pool() -> None:
 
     assert len(selected) == 5
     assert [item.section for item in selected] == [
+        "신청 기간",
         "조건 구조",
         "공식 지원대상 원문",
         "정리된 지원 조건",
         "지원 내용",
-        "신청 기간",
     ]
 
 
@@ -95,8 +104,8 @@ def test_section_aware_selection_keeps_existing_target_order() -> None:
     )
 
     assert [item.section for item in selected] == [
-        "조건 구조",
         "신청 방법",
+        "조건 구조",
         "지원 내용",
         "신청 기간",
         "유의 사항",
@@ -136,10 +145,10 @@ def test_search_policy_chunks_uses_larger_candidate_pool_only_when_requested() -
 
     assert calls == [{"query": "신청 기간은 언제인가요?", "k": 7, "policy_ids": [242]}]
     assert len(chunks) == 5
-    assert chunks[-1].chunk_id == 107
+    assert chunks[0].chunk_id == 107
 
 
-def test_search_policy_chunks_preserves_baseline_k_without_section_hint() -> None:
+def test_search_policy_chunks_preserves_baseline_k_for_ambiguous_query() -> None:
     calls: list[dict] = []
     response = PolicyRagSearchResponse(
         query="질문",
@@ -157,14 +166,14 @@ def test_search_policy_chunks_preserves_baseline_k_without_section_hint() -> Non
 
     chunks = asyncio.run(
         search_policy_chunks(
-            query="지원 내용 알려줘",
+            query="이 정책의 전체 내용을 알려줘",
             policy_ids=[242],
             top_k=5,
             rag_service=FakeRagService(),
         )
     )
 
-    assert calls == [{"query": "지원 내용 알려줘", "k": 5, "policy_ids": [242]}]
+    assert calls == [{"query": "이 정책의 전체 내용을 알려줘", "k": 5, "policy_ids": [242]}]
     assert len(chunks) == 5
 
 
@@ -201,12 +210,12 @@ def test_search_policy_chunks_records_only_returned_evidence() -> None:
         )
     )
 
-    assert [chunk.chunk_id for chunk in chunks] == [101, 102, 103, 104, 107]
+    assert [chunk.chunk_id for chunk in chunks] == [107, 101, 102, 103, 104]
     assert len(recorded) == 1
     assert [result.chunk_id for result in recorded[0].results] == [
+        107,
         101,
         102,
         103,
         104,
-        107,
     ]
